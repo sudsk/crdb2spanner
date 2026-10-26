@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crdb2spanner"
+version = "0.1.0.dev0"
+description = "Minimal-downtime CockroachDB to Cloud Spanner (PostgreSQL dialect) migration on Python + Dataflow"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "TBD - see README (D1)" }
+dependencies = [
+  "apache-beam[gcp]>=2.60",
+  "google-cloud-spanner>=3.46",
+  "psycopg[binary]>=3.1",
+  "pyarrow>=14",
+  "pyyaml>=6",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.5"]
+secrets = ["google-cloud-secret-manager>=2.20"]
+
+[project.scripts]
+crdb2spanner = "crdb2spanner.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crdb2spanner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore::pytest.PytestCollectionWarning"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

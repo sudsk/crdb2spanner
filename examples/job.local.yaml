@@ -1,0 +1,35 @@
+# Local job: docker-compose CockroachDB (movr) -> Spanner emulator (PostgreSQL dialect)
+job_id: movr-local
+work_dir: ./.local/jobs
+
+source:
+  database: movr
+  dsn: postgresql://root@localhost:26257/movr?sslmode=disable
+  schema: public
+
+target:
+  project: local-project
+  instance: local-instance
+  database: movr
+  emulator_host: localhost:9010
+
+# tables: [users, vehicles, rides]   # default: all tables
+# exclude_tables: []
+
+snapshot:
+  export_uri: nodelocal://1/snapshot          # written by CockroachDB...
+  read_path: ./.local/extern/snapshot          # ...read by the pipeline (same dir via volume)
+
+cdc:
+  sink: files                                  # Pub/Sub emulator can't be a changefeed sink
+  files_sink_uri: nodelocal://1/cdc
+  files_read_path: ./.local/extern/cdc
+  resolved_interval: 5s
+  min_checkpoint_frequency: 5s
+
+apply:
+  mode: strict          # shadow tables + HLC check (production default)
+  num_shards: 8
+  batch_size: 200
+  max_batch_latency_s: 2
+  dlq_path: ./.local/dlq

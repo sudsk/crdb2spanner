@@ -1,0 +1,72 @@
+# Local test environment for crdb2spanner
+#   docker compose up -d                       # CockroachDB (+ movr sample), Spanner emulator, Pub/Sub emulator
+#   docker compose --profile traffic up -d     # + continuous movr write traffic (for CDC testing)
+#   docker compose down -v                     # tear down and wipe data
+#
+# See docs/test-environment.md.
+
+name: crdb2spanner
+
+services:
+  cockroach:
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    command: start-single-node --insecure --http-addr=0.0.0.0:8080 --cache=.25 --max-sql-memory=.25
+    ports:
+      - "26257:26257"   # SQL
+      - "8080:8080"     # DB Console
+    volumes:
+      - crdb-data:/cockroach/cockroach-data
+      # nodelocal://1/... (EXPORT + changefeed file sink) lands here, readable by the pipelines
+      - ./.local/extern:/cockroach/cockroach-data/extern
+    healthcheck:
+      test: ["CMD", "./cockroach", "sql", "--insecure", "-e", "SELECT 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+
+  crdb-init:
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    depends_on:
+      cockroach:
+        condition: service_healthy
+    environment:
+      CRDB_ORG: ${CRDB_ORG:-}
+      CRDB_LICENSE: ${CRDB_LICENSE:-}
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        URL="postgresql://root@cockroach:26257?sslmode=disable"
+        cockroach sql --url "$$URL" -e "SET CLUSTER SETTING kv.rangefeed.enabled = true;"
+        if [ -n "$$CRDB_LICENSE" ]; then
+          cockroach sql --url "$$URL" -e "SET CLUSTER SETTING cluster.organization = '$$CRDB_ORG'; SET CLUSTER SETTING enterprise.license = '$$CRDB_LICENSE';"
+        fi
+        cockroach workload init movr --num-users=500 --num-vehicles=150 --num-rides=2000 "$$URL"
+        cockroach sql --url "$$URL/movr" -e "SELECT 'users', count(*) FROM users UNION ALL SELECT 'rides', count(*) FROM rides;"
+        echo "crdb-init done"
+    restart: "no"
+
+  movr-traffic:
+    profiles: ["traffic"]
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    depends_on:
+      crdb-init:
+        condition: service_completed_successfully
+    command: >
+      workload run movr --duration=${TRAFFIC_DURATION:-10m} --max-rate=${TRAFFIC_RATE:-20}
+      postgresql://root@cockroach:26257?sslmode=disable
+
+  spanner-emulator:
+    image: gcr.io/cloud-spanner-emulator/emulator:${SPANNER_EMULATOR_TAG:-latest}
+    ports:
+      - "9010:9010"   # gRPC  -> SPANNER_EMULATOR_HOST=localhost:9010
+      - "9020:9020"   # REST
+
+  pubsub-emulator:
+    image: gcr.io/google.com/cloudsdktool/google-cloud-cli:emulators
+    command: gcloud beta emulators pubsub start --project=local-project --host-port=0.0.0.0:8085
+    ports:
+      - "8085:8085"   # PUBSUB_EMULATOR_HOST=localhost:8085
+
+volumes:
+  crdb-data:

@@ -1,0 +1,36 @@
+# GCP job: CockroachDB -> Cloud Spanner (PostgreSQL dialect), Pub/Sub CDC, Dataflow
+job_id: orders-wave1
+work_dir: ./.local/jobs
+
+source:
+  database: orders
+  dsn_secret: projects/${GCP_PROJECT}/secrets/crdb-orders-dsn/versions/latest
+  schema: public
+
+target:
+  project: ${GCP_PROJECT}
+  instance: ${SPANNER_INSTANCE:-migration}
+  database: orders
+
+snapshot:
+  # CockroachDB writes the snapshot straight to GCS (needs egress + credentials on the cluster)
+  export_uri: gs://${BUCKET}/orders-wave1/snapshot?AUTH=implicit
+  read_path: gs://${BUCKET}/orders-wave1/snapshot
+
+cdc:
+  sink: pubsub
+  pubsub_project: ${GCP_PROJECT}
+  pubsub_region: europe-west2
+  topic_prefix: c2s-orders-
+  subscription_suffix: -sub
+  resolved_interval: 10s
+  min_checkpoint_frequency: 10s
+  # sink_credentials_b64: ${CRDB_SINK_SA_KEY_B64}   # if the cluster has no implicit GCP identity
+
+apply:
+  mode: strict
+  num_shards: 256
+  batch_size: 500
+  max_batch_latency_s: 5
+  dlq_path: gs://${BUCKET}/orders-wave1/dlq
+  # dlq_topic: projects/${GCP_PROJECT}/topics/c2s-orders-dlq
