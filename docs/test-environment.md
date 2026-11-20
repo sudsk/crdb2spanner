@@ -105,7 +105,7 @@ offer free trial and *Enterprise Free* licences. If `changefeed create` fails wi
 licence error, get a key from Cockroach Labs and start the stack with it:
 
 ```bash
-CRDB_ORG="EPAM" CRDB_LICENSE="crl-0-..." docker compose up -d --force-recreate crdb-init
+CRDB_ORG="YourOrg" CRDB_LICENSE="crl-0-..." docker compose up -d --force-recreate crdb-init
 ```
 
 ## 6. Emulator caveats
