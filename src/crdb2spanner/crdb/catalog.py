@@ -22,6 +22,7 @@ class Column:
     default: str | None = None
     hidden: bool = False
     generated: str | None = None  # computed column expression
+    virtual: bool = False  # VIRTUAL computed column (not stored, not emitted by changefeeds)
     ordinal: int = 0
 
 
@@ -153,6 +154,20 @@ def parse_index_block(create_statement: str) -> dict[str, dict[str, Any]]:
     return out
 
 
+def virtual_columns(create_statement: str) -> set[str]:
+    """Names of VIRTUAL computed columns in a SHOW CREATE TABLE statement."""
+    out = set()
+    for line in create_statement.splitlines():
+        m = re.match(r'\s*"?([^"\s]+)"?\s+.*\bAS\s*\(.*\)\s*VIRTUAL\b', line, re.IGNORECASE)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def count_families(create_statement: str) -> int:
+    return len(re.findall(r"^\s*FAMILY\b", create_statement, re.IGNORECASE | re.MULTILINE))
+
+
 def introspect(conn, database: str, schema: str = "public", only: list[str] | None = None) -> Catalog:
     """Build a Catalog from a live CockroachDB connection (psycopg3, autocommit)."""
     cur = conn.cursor()
@@ -218,6 +233,9 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
     cur.execute(f'SHOW CREATE TABLE "{schema}"."{name}"')
     create_stmt = cur.fetchone()[1]
     extra = parse_index_block(create_stmt)
+    virtual = virtual_columns(create_stmt)
+    for c in columns:
+        c.virtual = c.name in virtual
 
     cur.execute(f'SHOW INDEXES FROM "{schema}"."{name}"')
     cols = [d.name for d in cur.description]
