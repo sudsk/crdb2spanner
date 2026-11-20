@@ -1,0 +1,33 @@
+# Probe job: tables expected to hit known gaps (column families, geospatial).
+# Run separately so each finding is recorded without blocking the main job.
+job_id: torture-probes
+work_dir: ./.local/jobs
+
+source:
+  database: torture
+  dsn: postgresql://root@localhost:26257/torture?sslmode=disable
+
+target:
+  project: local-project
+  instance: local-instance
+  database: torture_probes
+  emulator_host: localhost:9010
+
+tables: [wide_families, places]
+
+snapshot:
+  export_uri: nodelocal://1/torture-probes/snapshot
+  read_path: ./.local/extern/torture-probes/snapshot
+
+cdc:
+  sink: files
+  files_sink_uri: nodelocal://1/torture-probes/cdc
+  files_read_path: ./.local/extern/torture-probes/cdc
+  resolved_interval: 5s
+  min_checkpoint_frequency: 5s
+
+apply:
+  mode: strict
+  num_shards: 4
+  batch_size: 200
+  dlq_path: ./.local/dlq/torture-probes

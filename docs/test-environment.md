@@ -66,6 +66,14 @@ What it does (each step is a normal CLI command you can run by hand):
 9. `schema apply --phase indexes`
 10. `validate --as-of <stop point>`: row counts and bucketed row hashes. Expect `validation passed`.
 
+## 3b. Incompatibilities ("torture") run
+
+```bash
+./scripts/e2e_torture.sh
+```
+
+This runs a purpose-built database covering UUID and hidden-rowid keys, hash-sharded keys, computed columns, collations, edge values, FK cascades and more. It then runs CDC scenarios: PK updates, hot keys, big transactions, duplicates, pause/resume, poison messages, a streaming kill/restart and a source DDL change. See [tests/e2e/README.md](../tests/e2e/README.md). Send back `.local/e2e/torture-results.txt` and `.local/e2e/torture.log`.
+
 ## 4. Handy commands
 
 ```bash

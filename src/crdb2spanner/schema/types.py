@@ -84,6 +84,11 @@ _STRINGS = {"STRING", "VARCHAR", "CHARACTER VARYING", "TEXT", "CHAR", "CHARACTER
 
 
 def map_type(sql_type: str, enums: dict[str, list[str]] | None = None, uuid_native: bool = False) -> TypeMapping:
+    collate = re.search(r"\s+COLLATE\s+\S+", sql_type, re.IGNORECASE)
+    if collate:
+        inner = map_type(sql_type[: collate.start()] + sql_type[collate.end():], enums, uuid_native)
+        return TypeMapping(inner.spanner_type, inner.transform, "medium",
+                           f"collation {collate.group(0).split()[-1]} not preserved - Spanner compares by code point")
     base, args, is_array = _base_and_args(sql_type)
     enums = {k.upper(): v for k, v in (enums or {}).items()}
 

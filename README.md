@@ -21,8 +21,9 @@ Google Cloud offers a guided, minimal-downtime path for MySQL/PostgreSQL → Spa
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest -q                      # 50 tests, no containers needed
+pytest -q                      # unit + DirectRunner tests, no containers needed
 ./scripts/local_e2e.sh         # CockroachDB (movr) -> Spanner emulator, full flow + validation
+./scripts/e2e_torture.sh       # incompatibilities schema + CDC failure scenarios (tests/e2e/README.md)
 ```
 
 See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the sample databases and how to move to real GCP.

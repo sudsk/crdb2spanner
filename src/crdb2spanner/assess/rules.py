@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 
-from ..crdb.catalog import Catalog, Table
+from ..crdb.catalog import Catalog, Table, count_families
 from ..schema.types import map_type
 
 SEVERITY_ORDER = {"blocker": 4, "high": 3, "medium": 2, "info": 1}
@@ -58,14 +58,17 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
             add(c.name, "SEQUENCE_DEFAULT", "high", f"sequence default {c.default}",
                 "CREATE SEQUENCE ... BIT_REVERSED_POSITIVE in Spanner")
         if c.generated:
-            add(c.name, "COMPUTED_COLUMN", "medium", f"computed column: {c.generated}",
-                "Spanner generated column, or compute in app")
+            add(c.name, "COMPUTED_COLUMN", "medium",
+                f"{'VIRTUAL' if c.virtual else 'STORED'} computed column: {c.generated}",
+                "VIRTUAL: not migrated, recreate as Spanner generated column; STORED: migrated as a plain column")
         if c.hidden and "crdb_internal" in c.name and "shard" in c.name:
             add(c.name, "HASH_SHARDED", "info", "hash-sharded index/PK shard column",
                 "drop - Spanner distributes keys itself (but avoid monotonic keys)")
         tm = map_type(c.sql_type, catalog.enums)
         if tm.severity:
-            add(c.name, "TYPE_" + c.sql_type.split("(")[0].upper().replace(" ", "_").replace("[]", "_ARRAY"),
+            rule = ("TYPE_COLLATED_STRING" if " COLLATE " in c.sql_type.upper() else
+                    "TYPE_" + c.sql_type.split("(")[0].upper().replace(" ", "_").replace("[]", "_ARRAY"))
+            add(c.name, rule,
                 tm.severity, tm.note or f"{c.sql_type} -> {tm.spanner_type}",
                 f"maps to {tm.spanner_type}")
 
@@ -77,8 +80,10 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
             "Spanner multi-region with read replicas")
     if "TTL_EXPIRE_AFTER" in ddl or "TTL_EXPIRATION_EXPRESSION" in ddl:
         add(None, "ROW_TTL", "medium", "row-level TTL", "Spanner row deletion policy (TTL)")
-    if ddl.count("FAMILY ") > 1:
-        add(None, "COLUMN_FAMILIES", "info", "multiple column families", "none - dropped")
+    if count_families(t.create_statement) > 1:
+        add(None, "COLUMN_FAMILIES", "high",
+            "multiple column families: changefeeds need split_column_families, which CDC apply does not "
+            "support yet (roadmap)", "exclude the table for now; split_column_families support is on the roadmap (no source change needed)")
     for i in t.indexes:
         if i.inverted:
             add(None, "INVERTED_INDEX", "medium", f"inverted index {i.name}",
