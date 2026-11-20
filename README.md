@@ -6,7 +6,7 @@
 
 ## Why this exists
 
-Google Cloud offers a guided, minimal-downtime path for MongoDB → Firestore with MongoDB compatibility (Datastream → Cloud Storage → Dataflow → Firestore). It also offers one for MySQL/PostgreSQL → Spanner, through the Spanner Migration Tool (SMT) with Datastream and Dataflow. **No equivalent exists for CockroachDB.** Datastream has no CockroachDB source, so SMT's live-migration path can't be used as-is.
+Google Cloud offers a guided, minimal-downtime path for MySQL/PostgreSQL → Spanner, through the Spanner Migration Tool (SMT) with Datastream and Dataflow. **No equivalent exists for CockroachDB.** Datastream has no CockroachDB source, so SMT's live-migration path can't be used as-is.
 
 `crdbtospanner` fills that gap. It works like a "DMS for CockroachDB":
 
@@ -47,8 +47,6 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Reverse replication | - | M4 |
 
 ## How a migration works (operator view)
-
-Modelled on Google's *Migrate to Firestore with MongoDB compatibility* guide.
 
 | Stage | What happens | Source state |
 |---|---|---|
@@ -131,9 +129,7 @@ crdbtospanner/
 
 ## Licensing and provenance
 
-This project is a **clean-room implementation**. It is built from public CockroachDB, Spanner, Dataflow and Apache Beam documentation, and from Apache-2.0 Google components (SMT, DataflowTemplates, DVT, PGAdapter). It contains **no code from, and is not derived from, `storj/spanner-migration` (AGPL-3.0)**. See [PROVENANCE.md](PROVENANCE.md).
-
-The project licence is still to be decided: EPAM proprietary, or Apache-2.0.
+This project is built from public CockroachDB, Spanner, Dataflow and Apache Beam documentation, and from Apache-2.0 Google components (SMT, DataflowTemplates, DVT, PGAdapter). See [PROVENANCE.md](PROVENANCE.md).
 
 ## Roadmap
 

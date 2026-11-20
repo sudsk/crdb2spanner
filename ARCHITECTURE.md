@@ -94,7 +94,7 @@ flowchart LR
 
 - **Typer CLI.** A thin Cloud Run API can come later, if a UI is wanted.
 - **Job state machine:** `CREATED → ASSESSED → SCHEMA_APPLIED → SNAPSHOT_TAKEN → LOADING → LOADED → REPLICATING → VALIDATED → CUTOVER_READY → CUTOVER_DONE → (FALLBACK_ARMED) → CLOSED`.
-- **Metadata store:** a small Spanner (or Firestore) database `crdb2spanner_meta`, holding jobs, tables, T0, changefeed IDs, Dataflow job IDs, per-table resolved watermarks, validation results and the audit log. This matches SMT's approach of a metadata database for live migrations.
+- **Metadata store:** a small Spanner database `crdb2spanner_meta`, holding jobs, tables, T0, changefeed IDs, Dataflow job IDs, per-table resolved watermarks, validation results and the audit log. This matches SMT's approach of a metadata database for live migrations.
 - **Secrets** are kept in Secret Manager. No DSNs in config files.
 - **Config:** one YAML file per job: source and target profiles, table include/exclude list, per-table overrides, and sink choice.
 
@@ -178,7 +178,7 @@ WITH cursor = '<T0>', updated, mvcc_timestamp, resolved = '10s',
   | Sink | Pros | Cons | Use when |
   |---|---|---|---|
   | **Pub/Sub** (default) | Low latency, native Dataflow source, backpressure | 7-day retention, replay is harder | Steady-state CDC |
-  | **GCS** (Firestore-guide pattern) | Durable and replayable, cheap, easy to audit | Higher latency (file flush interval) | Very large catch-ups, or regulated audit needs |
+  | **GCS** | Durable and replayable, cheap, easy to audit | Higher latency (file flush interval) | Very large catch-ups, or regulated audit needs |
 
 - **v0: one changefeed + one topic per table.** Each table can be restarted on its own and gets its own backlog. Grouping tables into fewer changefeeds is an M3 optimisation for databases with many tables.
 - `schema_change_policy='stop'`: a source DDL change stops the feed safely. The operator then follows the schema-change runbook.
@@ -308,11 +308,10 @@ To prevent loops, the forward CDC is stopped at cutover, so there's no ping-pong
 
 | # | Decision | Options | Owner / when |
 |---|---|---|---|
-| D1 | Project licence | EPAM proprietary vs Apache-2.0 | EPAM legal, before M1 |
 | D2 | Snapshot mechanism | `EXPORT` vs changefeed `initial_scan='only'` | M0 spike |
 | D3 | CDC sink | Pub/Sub vs GCS, or both | M0 spike |
 | D4 | Spanner sink | Native DoFn vs cross-language SpannerIO | M0 spike |
 | D5 | Default apply mode | Strict (shadow tables) vs fast | Proposed: strict |
-| D6 | Metadata store | Spanner vs Firestore | M1 |
+| D6 | Metadata store | Spanner database vs JSON files in GCS | M1 |
 | D7 | Multi-region mapping | Per client topology | Discovery |
 | D8 | UUID / interval / time handling in Spanner PG | Native vs varchar | M0, check current Spanner PG feature set |
