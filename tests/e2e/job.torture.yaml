@@ -1,0 +1,33 @@
+# Main torture job: CockroachDB "torture" database -> Spanner emulator (PostgreSQL dialect)
+job_id: torture
+work_dir: ./.local/jobs
+
+source:
+  database: torture
+  dsn: postgresql://root@localhost:26257/torture?sslmode=disable
+
+target:
+  project: local-project
+  instance: local-instance
+  database: torture
+  emulator_host: localhost:9010
+
+exclude_tables: [wide_families, places]   # probes - see job.torture-probes.yaml
+
+snapshot:
+  export_uri: nodelocal://1/torture/snapshot
+  read_path: ./.local/extern/torture/snapshot
+
+cdc:
+  sink: files
+  files_sink_uri: nodelocal://1/torture/cdc
+  files_read_path: ./.local/extern/torture/cdc
+  resolved_interval: 5s
+  min_checkpoint_frequency: 5s
+
+apply:
+  mode: strict
+  num_shards: 8
+  batch_size: 200
+  max_batch_latency_s: 2
+  dlq_path: ./.local/dlq/torture
