@@ -1,6 +1,6 @@
 CFG ?= examples/job.local.yaml
 
-.PHONY: install test lint up down e2e traffic sdist
+.PHONY: install test lint up down e2e e2e-torture traffic sdist
 
 install:
 	pip install -e ".[dev]"
@@ -22,6 +22,9 @@ traffic:
 
 e2e:
 	CFG=$(CFG) ./scripts/local_e2e.sh
+
+e2e-torture:
+	./scripts/e2e_torture.sh
 
 sdist:
 	python -m build --sdist

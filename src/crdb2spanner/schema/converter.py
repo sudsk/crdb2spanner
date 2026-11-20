@@ -112,6 +112,11 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
     for c in sorted(t.columns, key=lambda c: c.ordinal):
         if c.hidden and c.name not in t.primary_key:
             continue  # hash-shard columns, other hidden internals
+        if c.virtual:
+            res.issues.append(Issue(t.name, c.name, "medium",
+                                    f"VIRTUAL computed column ({c.generated}) not migrated - recreate as a "
+                                    "Spanner generated column or compute in the app"))
+            continue
         if c.generated:
             res.issues.append(Issue(t.name, c.name, "medium",
                                     f"computed column ({c.generated}) migrated as a plain column"))
