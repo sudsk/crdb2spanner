@@ -130,6 +130,8 @@ crdbtospanner/
 
 ## Licensing and provenance
 
+Licensed under the [Apache License 2.0](LICENSE). See also [NOTICE](NOTICE).
+
 This project is built from public CockroachDB, Spanner, Dataflow and Apache Beam documentation, and from Apache-2.0 Google components (SMT, DataflowTemplates, DVT, PGAdapter). See [PROVENANCE.md](PROVENANCE.md).
 
 ## Roadmap
