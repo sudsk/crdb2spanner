@@ -80,7 +80,10 @@ class SkipUnreadable(beam.DoFn):
             yield md
         else:
             self.skipped.inc()
-            log.warning("skipping unreadable CDC file (will be picked up later): %s", md.path)
+            # RESOLVED files only carry a checkpoint timestamp (no rows) and are written
+            # continuously, so a just-created one is routine; only data files merit a warning
+            level = logging.DEBUG if md.path.endswith(".RESOLVED") else logging.WARNING
+            log.log(level, "skipping unreadable CDC file (will be picked up later): %s", md.path)
 
 
 def _latest(events):
