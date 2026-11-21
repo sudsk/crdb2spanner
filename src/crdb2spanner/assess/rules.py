@@ -67,6 +67,7 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
         tm = map_type(c.sql_type, catalog.enums)
         if tm.severity:
             rule = ("TYPE_COLLATED_STRING" if " COLLATE " in c.sql_type.upper() else
+                    "TYPE_ENUM" if (tm.note or "").startswith("ENUM ") else
                     "TYPE_" + c.sql_type.split("(")[0].upper().replace(" ", "_").replace("[]", "_ARRAY"))
             add(c.name, rule,
                 tm.severity, tm.note or f"{c.sql_type} -> {tm.spanner_type}",
