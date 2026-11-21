@@ -24,6 +24,7 @@ pip install -e ".[dev]"
 pytest -q                      # unit + DirectRunner tests, no containers needed
 ./scripts/local_e2e.sh         # CockroachDB (movr) -> Spanner emulator, full flow + validation
 ./scripts/e2e_torture.sh       # incompatibilities schema + CDC failure scenarios (tests/e2e/README.md)
+./scripts/e2e_multiregion.sh   # 3-region CockroachDB: REGIONAL BY ROW / GLOBAL / BY TABLE
 ```
 
 See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the sample databases and how to move to real GCP.
@@ -43,6 +44,9 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Bulk load (Beam) | `pipelines/bulk_load.py` | Implemented |
 | CDC apply (Beam, Pub/Sub or files; LWW; strict/fast) | `pipelines/cdc_apply.py`, `pipelines/common/*` | Implemented, convergence-tested with shuffled and duplicated events |
 | Validation (counts + bucketed hashes) | `validate/compare.py` | Implemented (single process) |
+| Mutation-aware commits, commit delay/timeout, transaction tags | `pipelines/common/spanner_sink.py` | Implemented |
+| Multi-region sources (`REGIONAL BY ROW` region kept as a column) | `schema/converter.py`, `scripts/e2e_multiregion.sh` | Implemented, needs a live run |
+| Pub/Sub admin, `count`, `truncate-target` | `control/pubsub_admin.py`, `spanner/data.py` | Implemented |
 | Metadata DB, cutover gating, dashboards, Terraform | - | M2–M3 |
 | Flex Templates | `templates/` | Scaffold (M3) |
 | Reverse replication | - | M4 |

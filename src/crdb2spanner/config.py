@@ -90,6 +90,9 @@ class ApplyConfig:
     num_shards: int = 64
     batch_size: int = 500
     max_batch_latency_s: int = 5
+    max_commit_delay_ms: int = 100       # Spanner commit delay, 0-500 ms: throughput vs latency
+    commit_timeout_s: int = 60           # per commit attempt; aborted txns are retried until this
+    max_mutations_per_commit: int = 60000  # Spanner limit is 80,000 incl. index entries
     dlq_path: str = "./.local/dlq"
     dlq_topic: str | None = None
 

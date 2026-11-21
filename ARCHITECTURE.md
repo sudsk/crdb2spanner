@@ -211,9 +211,45 @@ ReadFromPubSub(per-table subscriptions, with_attributes)
 - **Transactions:** changefeeds don't preserve transaction boundaries. Spanner sees each row's final state but not the source's multi-row atomicity. At cutover, after the backlog drains past the freeze timestamp, the target is consistent as of that point.
 
 **Spanner writes (PG dialect)**
-- The default sink is a **native Python DoFn** using `google-cloud-spanner`. Mutations are dialect-agnostic. It uses `batch()` / `run_in_transaction` and `max_commit_delay` for throughput, with session pooling per worker.
+- The default sink is a **native Python DoFn** using `google-cloud-spanner`. Mutations are dialect-agnostic, and writes go through `batch()` (bulk/fast) or `run_in_transaction` (strict).
+- **Commit settings** (`apply.*`):
+
+  | Setting | Default | Purpose |
+  |---|---|---|
+  | `max_commit_delay_ms` | 100 ms | Spanner's 0–500 ms commit delay, trading latency for throughput. Not sent to the emulator |
+  | `commit_timeout_s` | 60 s | Per commit. Aborted transactions are retried by the client until this deadline |
+  | `max_mutations_per_commit` | 60,000 | Each batch is split so that no commit goes over this. Spanner's limit is 80,000 mutations, counting each column written plus each secondary-index entry. The estimate per op is columns × (1 + secondary indexes), plus the shadow row in strict mode |
+
+  Commits carry a transaction tag (`c2s-<job_id>`) so they can be picked out in Spanner's query and lock statistics.
+- **Failure isolation:** if a chunk fails after retries, its ops are retried one at a time. Only the failing op goes to the DLQ, never its whole batch. Nothing is held back or dropped silently.
+- **Stale-event protection survives restarts.** Strict mode keeps the last-applied HLC per key in shadow tables. Process memory isn't relied on, because a replay after a restart could otherwise overwrite newer data.
 - Beam's cross-language `WriteToSpanner` (Java expansion service) is an alternative. PG-dialect support through the Python wrapper still needs verification (M0).
 - Writes are idempotent by design, since upserts are guarded by HLC.
+
+**Envelope variants accepted**
+- Wrapped JSON, both lowercase and capitalised (`Key` / `Value` / `Topic`, as the newer Pub/Sub sink emits), as well as the cloud-storage NDJSON shape.
+- The **enriched envelope** (CockroachDB v25.2+): the timestamp comes from `source.ts_hlc`, and `op: "d"` is a delete.
+- `resolved` messages advance the table's watermark. They never reach the writer.
+- Numbers are parsed exactly (Decimal), so INT8 and DECIMAL values never pass through a float.
+
+**Multi-region sources (`REGIONAL BY ROW`)**
+- CockroachDB puts a hidden `crdb_region` column at the front of the physical primary key. Introspection records it as an *implicit key column*.
+- In Spanner, `crdb_region` becomes an ordinary `varchar(64)` column and the key is the logical key. Each row's home region is kept as data for a later Spanner geo-partitioning or placement design.
+- Changefeed keys that include the region prefix are mapped to the logical key. The prefix value fills the `crdb_region` column.
+- Moving a row between regions changes CockroachDB's physical key but not its logical one. It's tested in `scripts/e2e_multiregion.sh`.
+- `GLOBAL` and `REGIONAL BY TABLE` tables need no data changes. They're flagged so the Spanner instance config can be chosen.
+
+**Source version check**
+- The assessment flags CockroachDB v23.1.0 – v24.1.3. Those versions are affected by Cockroach Labs advisory a122372 (changefeed out-of-order emission), so the source should be upgraded before CDC, with strict mode kept on.
+
+### 4.6b Operator commands around CDC
+
+| Command | What it does |
+|---|---|
+| `pubsub create / delete / list` | One topic and one subscription per table (7-day retention, 60 s ack deadline). Existing topics and subscriptions are reused. A failure on one table is reported and the others carry on. `delete` is a dry run unless `--yes` is given |
+| `changefeed create / list / cancel` | One changefeed per table from `cursor = T0`. `list` shows status and lag. `cancel` touches only this job's recorded feeds |
+| `count [--estimate]` | Source vs target row counts per table. `--estimate` uses CockroachDB table statistics, so large tables aren't scanned |
+| `truncate-target --yes` | Empties target tables and their shadow tables with partitioned DML, for re-running tests |
 
 ### 4.7 Watermarks, lag and cutover gating
 

@@ -105,6 +105,8 @@ def map_type(sql_type: str, enums: dict[str, list[str]] | None = None, uuid_nati
         m = TypeMapping("numeric", "decimal", "info", f"precision/scale {','.join(args)} not enforced")
     elif base in _SCALAR:
         m = _SCALAR[base]
+    elif base.split(".")[-1].strip('"') == "CRDB_INTERNAL_REGION":
+        m = TypeMapping("varchar(64)", "to_text", "info", "crdb_region (multi-region) stored as text")
     elif base.split(".")[-1].strip('"') in enums:
         m = TypeMapping("varchar(255)", "to_text", "info",
                         f"ENUM {base.split('.')[-1].strip(chr(34)).lower()} stored as text")

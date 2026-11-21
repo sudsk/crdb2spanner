@@ -68,5 +68,50 @@ services:
     ports:
       - "8085:8085"   # PUBSUB_EMULATOR_HOST=localhost:8085
 
+  # ---- multi-region CockroachDB (profile "multiregion"): 3 nodes, 3 regions ----------------
+  # docker compose --profile multiregion up -d    (SQL on localhost:26258, console on :8081)
+  crdb-mr1:
+    profiles: ["multiregion"]
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    command: >
+      start --insecure --join=crdb-mr1:26257,crdb-mr2:26257,crdb-mr3:26257
+      --advertise-addr=crdb-mr1:26257 --locality=region=europe-west2,zone=europe-west2-a
+      --http-addr=0.0.0.0:8080 --cache=.15 --max-sql-memory=.15
+    ports: ["26258:26257", "8081:8080"]
+    volumes:
+      - crdb-mr1-data:/cockroach/cockroach-data
+      - ./.local/extern-mr:/cockroach/cockroach-data/extern
+  crdb-mr2:
+    profiles: ["multiregion"]
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    command: >
+      start --insecure --join=crdb-mr1:26257,crdb-mr2:26257,crdb-mr3:26257
+      --advertise-addr=crdb-mr2:26257 --locality=region=us-east1,zone=us-east1-b
+      --cache=.15 --max-sql-memory=.15
+    volumes: [crdb-mr2-data:/cockroach/cockroach-data]
+  crdb-mr3:
+    profiles: ["multiregion"]
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    command: >
+      start --insecure --join=crdb-mr1:26257,crdb-mr2:26257,crdb-mr3:26257
+      --advertise-addr=crdb-mr3:26257 --locality=region=asia-south1,zone=asia-south1-a
+      --cache=.15 --max-sql-memory=.15
+    volumes: [crdb-mr3-data:/cockroach/cockroach-data]
+  crdb-mr-init:
+    profiles: ["multiregion"]
+    image: cockroachdb/cockroach:${CRDB_TAG:-latest-v24.3}
+    depends_on: [crdb-mr1, crdb-mr2, crdb-mr3]
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        for i in $$(seq 1 30); do ./cockroach init --insecure --host=crdb-mr1:26257 && break; \
+          ./cockroach sql --insecure --host=crdb-mr1:26257 -e "SELECT 1" >/dev/null 2>&1 && break; sleep 2; done
+        ./cockroach sql --insecure --host=crdb-mr1:26257 -e "SET CLUSTER SETTING kv.rangefeed.enabled = true;"
+        ./cockroach sql --insecure --host=crdb-mr1:26257 -e "SHOW REGIONS FROM CLUSTER;"
+    restart: "no"
+
 volumes:
   crdb-data:
+  crdb-mr1-data:
+  crdb-mr2-data:
+  crdb-mr3-data:

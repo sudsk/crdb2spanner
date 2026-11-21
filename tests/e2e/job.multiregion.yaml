@@ -1,0 +1,30 @@
+# Multi-region source (compose profile "multiregion") -> Spanner emulator (PostgreSQL dialect)
+job_id: multiregion
+work_dir: ./.local/jobs
+
+source:
+  database: mr
+  dsn: postgresql://root@localhost:26258/mr?sslmode=disable
+
+target:
+  project: local-project
+  instance: local-instance
+  database: mr
+  emulator_host: localhost:9010
+
+snapshot:
+  export_uri: nodelocal://1/mr/snapshot
+  read_path: ./.local/extern-mr/mr/snapshot
+
+cdc:
+  sink: files
+  files_sink_uri: nodelocal://1/mr/cdc
+  files_read_path: ./.local/extern-mr/mr/cdc
+  resolved_interval: 5s
+  min_checkpoint_frequency: 5s
+
+apply:
+  mode: strict
+  num_shards: 4
+  batch_size: 200
+  dlq_path: ./.local/dlq/multiregion
