@@ -39,6 +39,22 @@ in_crdb()   { docker compose exec -T cockroach sh -c "$1"; }
 hlc()       { crdb_q "SELECT cluster_logical_timestamp()::STRING"; }
 # CockroachDB writes nodelocal files as root inside the container; make them readable by the pipelines
 share_extern() { in_crdb "chmod -R a+rX /cockroach/cockroach-data/extern 2>/dev/null || true"; }
+show_dlq() {  # one line per dead-lettered record: stage, table, key, error (row values omitted)
+  local files; files=$(find "$1" -type f -name '*.jsonl' 2>/dev/null)
+  [ -z "$files" ] && { echo "  DLQ $1: empty"; return 0; }
+  echo "  DLQ $1:"
+  cat $files | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+    except ValueError:
+        continue
+    p = r.get("payload") or {}
+    p = p if isinstance(p, dict) else {}
+    print("   ", r.get("stage"), p.get("table"), p.get("key"), "->", str(r.get("error"))[:300])
+' | sort | uniq -c | head -20
+}
 show_files() { echo "  files under $1:"; find "$1" -type f 2>/dev/null | head -5; echo "  ($(find "$1" -type f 2>/dev/null | wc -l) files)"; }
 feeds_running() { crdb_q "SELECT count(*) FROM [SHOW CHANGEFEED JOBS] WHERE status = 'running' AND $1"; }
 
@@ -123,6 +139,7 @@ show_files .local/extern/torture/snapshot
 T0=$(python3 -c "import json; print(json.load(open('.local/jobs/torture/snapshot.json'))['t0'])")
 check "bulk load" c2s load -c "$CFG"
 check "validate after bulk load (as of T0)" validate "$T0"
+show_dlq .local/dlq/torture
 
 step "4. Changefeeds (cursor = T0)"
 must c2s changefeed create -c "$CFG"

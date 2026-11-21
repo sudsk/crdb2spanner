@@ -220,3 +220,27 @@ def canonical(v: Any) -> str:
     if isinstance(v, (list, tuple)):
         return "[" + ",".join(canonical(x) for x in v) + "]"
     return str(v)
+
+
+# --- Spanner client wire format ---------------------------------------------------------
+def wire(v):
+    """Encode a value for the Spanner client.
+
+    The Python client sends BYTES as base64 text and only accepts ``bytes`` that are
+    already base64-encoded, so raw bytes (from CDC or Parquet) are encoded here, at
+    the edge. Ops keep raw bytes so dedupe/validation compare like with like.
+    """
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(v))
+    if isinstance(v, (list, tuple)):
+        return [wire(x) for x in v]
+    return v
+
+
+def from_wire(v):
+    """Inverse of :func:`wire` for values read back: the client returns BYTES as base64 bytes."""
+    if isinstance(v, bytes):
+        return base64.b64decode(v)
+    if isinstance(v, list):
+        return [from_wire(x) for x in v]
+    return v
