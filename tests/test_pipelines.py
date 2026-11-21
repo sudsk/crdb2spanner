@@ -126,7 +126,7 @@ class FakeTxn:
         self.shadow_rows, self.writes, self.deletes = shadow_rows, [], []
 
     def read(self, table, columns, keyset):
-        return [r for r in self.shadow_rows if list(r[:-2]) in keyset.keys]
+        return [r for r in self.shadow_rows if list(r[:-3]) in keyset.keys]
 
     def insert_or_update(self, table, columns, values):
         self.writes.append((table, columns, values))
@@ -142,19 +142,22 @@ def test_strict_mode_skips_ops_older_than_shadow():
     sink._spanner = spanner
     sink.shadow = {"users": ("c2s_shadow_users", ["city", "id"])}
     sink.skipped = sink.applied = type("C", (), {"inc": lambda *a: None})()
-    txn = FakeTxn([["rome", "a", 10, 0]])  # shadow says key (rome,a) last applied at HLC 10
+    # shadow: (rome,a) last applied at HLC 10; (rome,d) deleted at HLC 12
+    txn = FakeTxn([["rome", "a", 10, 0, False], ["rome", "d", 12, 0, True]])
     ops = [
         Op("users", "users", "upsert", ("rome", "a"), {"city": "rome", "id": "a", "name": "stale"}, HLC(8)),
         Op("users", "users", "upsert", ("rome", "b"), {"city": "rome", "id": "b", "name": "fresh"}, HLC(9)),
         Op("users", "users", "delete", ("rome", "c"), None, HLC(11)),
+        # same HLC as the delete: a region move re-inserting the row - must be applied
+        Op("users", "users", "upsert", ("rome", "d"), {"city": "rome", "id": "d", "name": "moved"}, HLC(12)),
     ]
     sink._strict_txn(txn, ops)
     data = [w for w in txn.writes if w[0] == "users"]
     shadow = [w for w in txn.writes if w[0] == "c2s_shadow_users"][0]
-    assert data == [("users", ["city", "id", "name"], [["rome", "b", "fresh"]])]
+    assert data == [("users", ["city", "id", "name"], [["rome", "b", "fresh"], ["rome", "d", "moved"]])]
     assert txn.deletes == [("users", [["rome", "c"]])]
     assert shadow[1] == ["city", "id", "c2s_hlc_wall", "c2s_hlc_logical", "c2s_deleted"]
-    assert sorted(shadow[2]) == [["rome", "b", 9, 0, False], ["rome", "c", 11, 0, True]]
+    assert sorted(shadow[2]) == [["rome", "b", 9, 0, False], ["rome", "c", 11, 0, True], ["rome", "d", 12, 0, False]]
 
 
 def test_validation_buckets_are_order_independent():
