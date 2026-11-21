@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import struct
 from dataclasses import dataclass, field
 
 from ..config import JobConfig
@@ -36,6 +37,28 @@ def row_digest(values: list) -> int:
     return int.from_bytes(h.digest(), "big")
 
 
+def _float32(v):
+    """Spanner ``real`` stores float32; round the source value the same way before comparing."""
+    if isinstance(v, float):
+        return struct.unpack("f", struct.pack("f", v))[0]
+    if isinstance(v, list):
+        return [_float32(x) for x in v]
+    return v
+
+
+def normalisers(tm: TableMap) -> list:
+    """Per target column: a function applied to both sides before hashing."""
+    out = []
+    for c in tm.columns:
+        t = c.spanner_type.lower()
+        out.append(_float32 if t in ("real", "float4", "real[]", "float4[]") else None)
+    return out
+
+
+def _normalise(values: list, norms: list) -> list:
+    return [f(v) if f else v for v, f in zip(values, norms)]
+
+
 def key_bucket(key: tuple, buckets: int) -> int:
     return row_digest(list(key)) % buckets
 
@@ -45,13 +68,17 @@ class Side:
     rows: int = 0
     bucket_sum: dict[int, int] = field(default_factory=dict)
     keys: dict[int, dict[str, int]] = field(default_factory=dict)  # only for drill-down
+    values: dict[str, list[str]] = field(default_factory=dict)  # canonical values, drill-down only
 
-    def add(self, key: tuple, digest: int, buckets: int, keep: set[int] | None):
+    def add(self, key: tuple, values: list, buckets: int, keep: set[int] | None):
         self.rows += 1
+        digest = row_digest(values)
         b = key_bucket(key, buckets)
         self.bucket_sum[b] = (self.bucket_sum.get(b, 0) + digest) % (1 << 64)
         if keep is not None and b in keep:
-            self.keys.setdefault(b, {})["|".join(canonical(k) for k in key)] = digest
+            k = "|".join(canonical(x) for x in key)
+            self.keys.setdefault(b, {})[k] = digest
+            self.values[k] = [canonical(v) for v in values]
 
 
 @dataclass
@@ -70,6 +97,7 @@ class TableResult:
 def _scan_source(conn, cfg: JobConfig, tm: TableMap, as_of: str, buckets: int, keep=None) -> Side:
     side = Side()
     cols = [c.source for c in tm.columns]
+    norms = normalisers(tm)
     # text-mapped types (INTERVAL, TIME, INET, ENUM...) are rendered by CockroachDB itself,
     # matching what the changefeed JSON / EXPORT emit
     exprs = [f"{_q(c.source)}::STRING" if c.transform == "to_text" else _q(c.source)
@@ -84,9 +112,9 @@ def _scan_source(conn, cfg: JobConfig, tm: TableMap, as_of: str, buckets: int, k
                 break
             for r in batch:
                 row = tm.convert_row(dict(zip(cols, r)))
-                values = [row[c] for c in tm.target_columns]
+                values = _normalise([row[c] for c in tm.target_columns], norms)
                 key = tuple(row[c] for c in tm.target_pk)
-                side.add(key, row_digest(values), buckets, keep)
+                side.add(key, values, buckets, keep)
     return side
 
 
@@ -94,10 +122,11 @@ def _scan_target(db, tm: TableMap, buckets: int, keep=None) -> Side:
     side = Side()
     cols = tm.target_columns
     pk_idx = [cols.index(c) for c in tm.target_pk]
+    norms = normalisers(tm)
     with db.snapshot() as snap:  # strong read
         for r in snap.execute_sql(f"SELECT {', '.join(_q(c) for c in cols)} FROM {_q(tm.target)}"):
-            r = [from_wire(v) for v in r]  # BYTES come back base64-encoded
-            side.add(tuple(r[i] for i in pk_idx), row_digest(r), buckets, keep)
+            r = _normalise([from_wire(v) for v in r], norms)  # BYTES come back base64-encoded
+            side.add(tuple(r[i] for i in pk_idx), r, buckets, keep)
     return side
 
 
@@ -125,10 +154,24 @@ def compare_table(conn, db, cfg: JobConfig, tm: TableMap, as_of_hlc: str, bucket
                 elif k not in sk:
                     diffs.append(f"extra in target: {k}")
                 elif sk[k] != tk[k]:
-                    diffs.append(f"different: {k}")
+                    diffs.append(f"different: {k}" + _column_diff(tm, s2.values.get(k), t2.values.get(k)))
                 if len(diffs) >= 50:
                     break
     return TableResult(tm.source, src.rows, tgt.rows, len(bad), diffs)
+
+
+def _short(v: str, n: int = 60) -> str:
+    if v == "\x00":
+        return "NULL"
+    return v if len(v) <= n else v[: n - 3] + "..."
+
+
+def _column_diff(tm: TableMap, src: list[str] | None, tgt: list[str] | None) -> str:
+    if not src or not tgt:
+        return ""
+    parts = [f"{c}: source={_short(a)} target={_short(b)}"
+             for c, a, b in zip(tm.target_columns, src, tgt) if a != b]
+    return "  [" + "; ".join(parts[:3]) + "]" if parts else ""
 
 
 def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], as_of_hlc: str | None = None,

@@ -228,10 +228,14 @@ def wire(v):
 
     The Python client sends BYTES as base64 text and only accepts ``bytes`` that are
     already base64-encoded, so raw bytes (from CDC or Parquet) are encoded here, at
-    the edge. Ops keep raw bytes so dedupe/validation compare like with like.
+    the edge. Decimals are sent as exact text for PostgreSQL ``numeric``. Ops keep raw bytes so dedupe/validation compare like with like.
     """
     if isinstance(v, (bytes, bytearray, memoryview)):
         return base64.b64encode(bytes(v))
+    if isinstance(v, Decimal):
+        # PostgreSQL-dialect numeric is arbitrary precision (and allows NaN), but the client
+        # validates Decimal against GoogleSQL NUMERIC limits (scale <= 9). Send the exact text.
+        return format(v, "f")
     if isinstance(v, (list, tuple)):
         return [wire(x) for x in v]
     return v

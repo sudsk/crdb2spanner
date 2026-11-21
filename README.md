@@ -37,7 +37,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Step | State |
 |---|---|
 | Seed, assessment (all expected findings), convert checks, schema apply on the emulator (uuid, bit-reversed sequences, generated columns) | Passing |
-| Bulk load + validation as of T0 | 9 of 11 tables exact. Fixes pushed for BYTES columns (`events`, `type_zoo`), re-run pending |
+| Bulk load + validation as of T0 | 9 of 11 tables exact. BYTES fixed; fixes pushed for high-scale/NaN `numeric` and `real` (float32) comparison, re-run pending |
 | CDC replicate (`01_dml_mix`) | Replicate passes. Validation affected by the BYTES fix above |
 | CDC scenarios 02–10 (PK updates, deletes, reordering, poison messages, schema change stop, real-world patterns) | In progress |
 | Multi-region (`scripts/e2e_multiregion.sh`) | Not yet run |
@@ -60,7 +60,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Validation (counts + bucketed hashes) | `validate/compare.py` | Implemented (single process) |
 | Mutation-aware commits, commit delay/timeout, transaction tags | `pipelines/common/spanner_sink.py` | Implemented |
 | Multi-region sources (`REGIONAL BY ROW` region kept as a column) | `schema/converter.py`, `scripts/e2e_multiregion.sh` | Implemented, needs a live run |
-| BYTES handling (base64 on the Spanner client wire, decoded on read) | `schema/values.py` (`wire`, `from_wire`) | Implemented, e2e re-run pending |
+| Spanner client wire format: BYTES as base64 (decoded on read), `numeric` as exact text (any scale, NaN) | `schema/values.py` (`wire`, `from_wire`) | Implemented |
 | Pub/Sub admin, `count`, `truncate-target` | `control/pubsub_admin.py`, `spanner/data.py` | Implemented |
 | Identifier renames, database-wide names, sequences, `unique_rowid()` → sequence defaults, native `uuid`, expression / duplicate indexes, CHECK, TTL, natural-key overrides | `schema/converter.py` | Implemented, passing in e2e |
 | Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |

@@ -19,7 +19,7 @@ from crdb2spanner.pipelines.common.envelope import HLC, ChangeEvent
 from crdb2spanner.pipelines.common.lww import LatestWinsDoFn
 from crdb2spanner.pipelines.common.ops import Op
 from crdb2spanner.schema.converter import convert
-from crdb2spanner.validate.compare import Side, row_digest
+from crdb2spanner.validate.compare import Side
 
 # ------------------------------------------------------------------------------ fakes
 STORE: dict = {}
@@ -161,13 +161,13 @@ def test_validation_buckets_are_order_independent():
     rows = [((i,), [i, f"v{i}"]) for i in range(100)]
     a, b = Side(), Side()
     for k, r in rows:
-        a.add(k, row_digest(r), 16, None)
+        a.add(k, r, 16, None)
     for k, r in reversed(rows):
-        b.add(k, row_digest(r), 16, None)
+        b.add(k, r, 16, None)
     assert a.bucket_sum == b.bucket_sum and a.rows == b.rows == 100
     c = Side()
     for k, r in rows[:-1] + [((99,), [99, "changed"])]:
-        c.add(k, row_digest(r), 16, None)
+        c.add(k, r, 16, None)
     assert sum(1 for x in a.bucket_sum if a.bucket_sum[x] != c.bucket_sum.get(x)) == 1
 
 

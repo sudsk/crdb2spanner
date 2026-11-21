@@ -197,3 +197,25 @@ def test_from_wire_decodes_bytes_read_back_from_spanner():
     assert from_wire(wire(raw)) == raw
     assert from_wire([wire(raw), None]) == [raw, None]
     assert from_wire("s") == "s" and from_wire(1) == 1
+
+
+def test_decimals_go_to_spanner_as_exact_text():
+    from decimal import Decimal
+
+    from crdb2spanner.schema.values import wire
+
+    assert wire(Decimal("12345678901234567890.123456789012345")) == "12345678901234567890.123456789012345"
+    assert wire(Decimal("NaN")) == "NaN"
+    assert wire(Decimal("1E-30")) == "0." + "0" * 29 + "1"
+    assert wire([Decimal("1.5"), None]) == ["1.5", None]
+
+
+def test_validation_rounds_real_columns_to_float32_and_shows_column_diffs():
+    from crdb2spanner.schema.mapping import ColumnMap, TableMap
+    from crdb2spanner.validate.compare import _column_diff, _normalise, normalisers
+
+    tm = TableMap(source="t", target="t", columns=[ColumnMap("id", "id", "bigint"), ColumnMap("r", "r", "real")],
+                  primary_key=["id"])
+    norms = normalisers(tm)
+    assert _normalise([1, 0.1], norms) == [1, _normalise([1, 0.10000000149011612], norms)[1]]
+    assert "r: source=1.0 target=2.0" in _column_diff(tm, ["1", "1.0"], ["1", "2.0"])
