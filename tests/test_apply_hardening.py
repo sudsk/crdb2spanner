@@ -188,3 +188,12 @@ def test_local_batch_runs_pin_fnapi_runner(monkeypatch):
     assert pick_local_runner(PipelineOptions(["--runner", "DataflowRunner"]), streaming=False) == "DataflowRunner"
     monkeypatch.setenv("C2S_LOCAL_RUNNER", "PrismRunner")
     assert pick_local_runner(PipelineOptions([]), streaming=False) == "PrismRunner"
+
+
+def test_from_wire_decodes_bytes_read_back_from_spanner():
+    from crdb2spanner.schema.values import from_wire, wire
+
+    raw = b"\x00\x01\xff"
+    assert from_wire(wire(raw)) == raw
+    assert from_wire([wire(raw), None]) == [raw, None]
+    assert from_wire("s") == "s" and from_wire(1) == 1

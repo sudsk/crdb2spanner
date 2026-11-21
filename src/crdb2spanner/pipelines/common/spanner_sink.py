@@ -17,7 +17,6 @@ instead of failing its neighbours.
 
 from __future__ import annotations
 
-import base64
 import datetime as dt
 import json
 import os
@@ -28,7 +27,7 @@ import apache_beam as beam
 from apache_beam.metrics import Metrics
 
 from ...schema.mapping import MappingSpec
-from ...schema.values import canonical
+from ...schema.values import canonical, from_wire, wire
 from .envelope import HLC
 from .ops import DLQ, Op, dlq_record
 
@@ -70,20 +69,6 @@ def chunk_by_mutations(ops: list[Op], weights: dict[str, int], strict: bool, max
     if cur:
         chunks.append(cur)
     return chunks
-
-
-def wire(v):
-    """Encode a value for the Spanner client.
-
-    The Python client sends BYTES as base64 text and only accepts ``bytes`` that are
-    already base64-encoded, so raw bytes (from CDC or Parquet) are encoded here, at
-    the edge. Ops keep raw bytes so dedupe/validation compare like with like.
-    """
-    if isinstance(v, (bytes, bytearray, memoryview)):
-        return base64.b64encode(bytes(v))
-    if isinstance(v, (list, tuple)):
-        return [wire(x) for x in v]
-    return v
 
 
 def _wire_row(values) -> list:
@@ -195,7 +180,7 @@ class SpannerApply(beam.DoFn):
             rs = txn.read(table=shadow_table, columns=pk_cols + SHADOW_COLS[:2],
                           keyset=self._spanner.KeySet(keys=[_wire_row(o.key) for o in tops]))
             for row in rs:
-                k = table + "|" + "|".join(canonical(v) for v in row[: len(pk_cols)])
+                k = table + "|" + "|".join(canonical(from_wire(v)) for v in row[: len(pk_cols)])
                 seen[k] = HLC(int(row[-2]), int(row[-1]))
             for op in tops:
                 prev = seen.get(op.ident())

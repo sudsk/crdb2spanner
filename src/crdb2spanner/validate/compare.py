@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec, TableMap
-from ..schema.values import canonical
+from ..schema.values import canonical, from_wire
 
 
 def _q(ident: str) -> str:
@@ -96,7 +96,7 @@ def _scan_target(db, tm: TableMap, buckets: int, keep=None) -> Side:
     pk_idx = [cols.index(c) for c in tm.target_pk]
     with db.snapshot() as snap:  # strong read
         for r in snap.execute_sql(f"SELECT {', '.join(_q(c) for c in cols)} FROM {_q(tm.target)}"):
-            r = list(r)
+            r = [from_wire(v) for v in r]  # BYTES come back base64-encoded
             side.add(tuple(r[i] for i in pk_idx), row_digest(r), buckets, keep)
     return side
 
