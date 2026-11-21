@@ -51,5 +51,51 @@ Probe tables live in a separate job (`job.torture-probes.yaml`). Their steps are
 ## Notes
 
 - Everything runs against the **Spanner emulator**. Repeat on a real 100-PU PostgreSQL-dialect instance (`examples/job.gcp.yaml`) before trusting performance or IAM behaviour.
-- Single-node CockroachDB can't test `REGIONAL BY ROW`, which needs a multi-region cluster. The converter covers it in unit tests only.
+- `REGIONAL BY ROW` needs a multi-region cluster, so it has its own run: see *Multi-region* below.
 - If `changefeed create` fails with a licence error, see `docs/test-environment.md` §5.
+
+## Multi-region
+
+```bash
+./scripts/e2e_multiregion.sh      # or: make e2e-multiregion
+```
+
+This starts a separate 3-node CockroachDB cluster with nodes in `europe-west2`, `us-east1` and `asia-south1` (compose profile `multiregion`, SQL on port 26258). It creates a `REGIONAL BY ROW` table, a `GLOBAL` table and a `REGIONAL BY TABLE` table, then runs assess, convert, snapshot, bulk load and CDC, and validates the result. The CDC scenario includes **moving rows between regions**.
+
+How multi-region tables are handled:
+- CockroachDB adds a hidden `crdb_region` column to the front of the physical primary key.
+- Spanner gets `crdb_region` as an **ordinary `varchar` column**, and the key stays the logical key (`id`). Each row's home region is kept as data, so a later Spanner geo-partitioning design can use it.
+- Changefeed keys that carry the region prefix are handled. `mapping.json` records the full source key as `source_key`.
+- Multi-region *placement* in Spanner (instance config, leader region, geo-partitioning) is a design decision. The tool flags it rather than doing it.
+
+Results go to `.local/e2e/multiregion-results.txt`. The cluster needs about 3 GB of memory. To stop it, run `docker compose --profile multiregion down -v`.
+
+## Running one step at a time
+
+Every stage is a separate `crdb2spanner` command, so you can run the flow by hand and inspect what happens after each step:
+
+```bash
+CFG=tests/e2e/job.torture.yaml
+sql() { docker compose exec -T cockroach ./cockroach sql --insecure "$@"; }
+share() { docker compose exec -T cockroach chmod -R a+rX /cockroach/cockroach-data/extern; }  # container writes root-only files
+
+docker compose up -d cockroach spanner-emulator pubsub-emulator crdb-init
+sql < tests/e2e/torture_schema.sql && sql < tests/e2e/torture_seed.sql
+
+crdb2spanner dev init-emulator -c $CFG          # emulator instance + PG-dialect database
+crdb2spanner assess  -c $CFG                    # -> .local/jobs/torture/assessment.md
+crdb2spanner convert -c $CFG                    # -> ddl_*.sql, mapping.json
+crdb2spanner schema apply -c $CFG --phase tables
+crdb2spanner snapshot -c $CFG && share          # EXPORT AS OF T0 -> .local/extern/torture/snapshot
+ls -R .local/extern/torture/snapshot | head     # check the Parquet files are visible
+crdb2spanner load     -c $CFG                   # bulk load
+crdb2spanner validate -c $CFG --as-of "$(jq -r .t0 .local/jobs/torture/snapshot.json)"
+
+crdb2spanner changefeed create -c $CFG          # cursor = T0
+sql -d torture < tests/e2e/scenarios/01_dml_mix.sql
+crdb2spanner changefeed list -c $CFG            # wait until lag is a few seconds
+share && crdb2spanner replicate -c $CFG --source files
+crdb2spanner validate -c $CFG
+crdb2spanner status -c $CFG
+crdb2spanner changefeed cancel -c $CFG          # when finished
+```

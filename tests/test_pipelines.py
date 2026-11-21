@@ -169,3 +169,19 @@ def test_validation_buckets_are_order_independent():
     for k, r in rows[:-1] + [((99,), [99, "changed"])]:
         c.add(k, row_digest(r), 16, None)
     assert sum(1 for x in a.bucket_sum if a.bucket_sum[x] != c.bucket_sum.get(x)) == 1
+
+
+def test_replicate_fails_loudly_when_no_cdc_files(job):
+    cfg, mapping, tmp = job
+    with pytest.raises(RuntimeError, match="no changefeed files found"):
+        cdc_apply.run(cfg, mapping, ["users"], [], source="files")
+
+
+def test_count_cdc_files(job):
+    cfg, mapping, tmp = job
+    d = tmp / "cdc" / "users" / "2026-11-21"
+    d.mkdir(parents=True)
+    (d / "a-users-1.ndjson").write_text("{}\n")
+    (tmp / "cdc" / "users" / "1.RESOLVED").write_text("{}")
+    (d / "ignore.tmp").write_text("")
+    assert cdc_apply.count_cdc_files(cfg.cdc.files_read_path, ["users", "rides"]) == {"users": 2, "rides": 0}

@@ -22,7 +22,7 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, read_path: str
     mapping_json = mapping.to_json()
     dlqs = []
     for table in tables:
-        pattern = f"{read_path.rstrip('/')}/{table}/*.parquet"
+        pattern = f"{read_path.rstrip('/')}/{table}/*.parquet"  # EXPORT writes export<id>-n<node>.<n>.parquet
         rows = p | f"Read[{table}]" >> beam.io.ReadFromParquet(pattern)
         ops = rows | f"ToOp[{table}]" >> beam.ParDo(RowToOp(mapping_json, table)).with_outputs(DLQ, main="ops")
         dlqs.append(ops[DLQ])
@@ -31,7 +31,10 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, read_path: str
             | f"Batch[{table}]" >> ShardAndBatch(cfg.apply.num_shards, cfg.apply.batch_size)
             | f"Write[{table}]" >> beam.ParDo(SpannerApply(
                 cfg.target.project, cfg.target.instance, cfg.target.database, mapping_json,
-                mode="bulk", emulator_host=cfg.target.emulator_host)).with_outputs(DLQ, main="ok")
+                mode="bulk", emulator_host=cfg.target.emulator_host,
+                max_commit_delay_ms=cfg.apply.max_commit_delay_ms, commit_timeout_s=cfg.apply.commit_timeout_s,
+                max_mutations=cfg.apply.max_mutations_per_commit,
+                transaction_tag=f"c2s-{cfg.job_id}")).with_outputs(DLQ, main="ok")
         )
         dlqs.append(written[DLQ])
     (dlqs | "FlattenDlq" >> beam.Flatten() | "Dlq" >> WriteDlq(cfg.apply, "bulk", streaming=False))

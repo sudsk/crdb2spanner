@@ -31,8 +31,11 @@ class TableMap:
     source: str
     target: str
     columns: list[ColumnMap]
-    primary_key: list[str]  # SOURCE column names, in key order
+    primary_key: list[str]  # SOURCE column names, in key order (as migrated to Spanner)
     shadow_table: str | None = None
+    # full source PK incl. columns dropped in Spanner (hash-shard columns); changefeed keys carry them
+    source_key: list[str] | None = None
+    index_count: int = 0  # secondary indexes on the target table (for mutation counting)
 
     # compiled lazily, not serialised
     _fns: dict[str, Callable[[Any], Any]] = field(default_factory=dict, repr=False, compare=False)
@@ -56,8 +59,15 @@ class TableMap:
     def target_pk(self) -> list[str]:
         return [self.col(s).target for s in self.primary_key]
 
+    def _strip_key(self, key: list | tuple) -> list:
+        """Drop values for source PK columns that are not migrated (e.g. hash-shard columns)."""
+        if self.source_key and len(key) == len(self.source_key) != len(self.primary_key):
+            return [v for c, v in zip(self.source_key, key) if c in self.primary_key]
+        return list(key)
+
     def convert_key(self, key: list | tuple) -> tuple:
         """Changefeed key array (source PK order) -> target key tuple."""
+        key = self._strip_key(key)
         if len(key) != len(self.primary_key):
             raise ValueError(f"{self.source}: key {key!r} does not match PK {self.primary_key}")
         return tuple(self.fn(c)(v) for c, v in zip(self.primary_key, key))
@@ -73,10 +83,16 @@ class TableMap:
             if c.source in row:
                 out[c.target] = self.fn(c.source)(row[c.source])
         if key is not None:
-            for s, v in zip(self.primary_key, key):
+            for s, v in zip(self.primary_key, self._strip_key(key)):
                 tgt = self.col(s).target
                 if tgt not in out:
                     out[tgt] = self.fn(s)(v)
+            # non-key columns carried only in the full source key (e.g. crdb_region)
+            if self.source_key and len(key) == len(self.source_key):
+                mapped = {c.source for c in self.columns}
+                for s, v in zip(self.source_key, key):
+                    if s in mapped and s not in self.primary_key and self.col(s).target not in out:
+                        out[self.col(s).target] = self.fn(s)(v)
         return out
 
 
@@ -108,6 +124,7 @@ class MappingSpec:
                 source=t["source"], target=t["target"],
                 columns=[ColumnMap(**c) for c in t["columns"]],
                 primary_key=t["primary_key"], shadow_table=t.get("shadow_table"),
+                source_key=t.get("source_key"), index_count=t.get("index_count", 0),
             )
             for t in d["tables"]
         ]

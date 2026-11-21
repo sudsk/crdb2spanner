@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 
 from ..crdb.catalog import Catalog, Table, count_families
@@ -30,11 +31,23 @@ def assess(catalog: Catalog, only: list[str] | None = None, exclude: list[str] |
                          "kv.rangefeed.enabled is not true (or could not be read)",
                          "SET CLUSTER SETTING kv.rangefeed.enabled = true;"))
 
+    v = crdb_version(catalog.version)
+    if v and (23, 1, 0) <= v <= (24, 1, 3):
+        f.append(Finding(None, None, "CRDB_OUT_OF_ORDER_ADVISORY", "high",
+                         f"CockroachDB v{'.'.join(map(str, v))} is in the range affected by Cockroach Labs "
+                         "advisory a122372 (changefeed out-of-order emission)",
+                         "upgrade the source cluster before CDC, and keep apply.mode=strict"))
+
     for t in catalog.tables:
         if (only and t.name not in only) or t.name in exclude:
             continue
         f.extend(_table_rules(t, catalog))
     return f
+
+
+def crdb_version(version: str) -> tuple[int, int, int] | None:
+    m = re.search(r"v(\d+)\.(\d+)\.(\d+)", version or "")
+    return tuple(int(x) for x in m.groups()) if m else None
 
 
 def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
@@ -57,7 +70,7 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
         if d.startswith("nextval("):
             add(c.name, "SEQUENCE_DEFAULT", "high", f"sequence default {c.default}",
                 "CREATE SEQUENCE ... BIT_REVERSED_POSITIVE in Spanner")
-        if c.generated:
+        if c.generated and not (c.hidden and "crdb_internal" in c.name and "shard" in c.name):
             add(c.name, "COMPUTED_COLUMN", "medium",
                 f"{'VIRTUAL' if c.virtual else 'STORED'} computed column: {c.generated}",
                 "VIRTUAL: not migrated, recreate as Spanner generated column; STORED: migrated as a plain column")
@@ -67,6 +80,7 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
         tm = map_type(c.sql_type, catalog.enums)
         if tm.severity:
             rule = ("TYPE_COLLATED_STRING" if " COLLATE " in c.sql_type.upper() else
+                    "TYPE_ENUM" if (tm.note or "").startswith("ENUM ") else
                     "TYPE_" + c.sql_type.split("(")[0].upper().replace(" ", "_").replace("[]", "_ARRAY"))
             add(c.name, rule,
                 tm.severity, tm.note or f"{c.sql_type} -> {tm.spanner_type}",
@@ -75,11 +89,16 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
     if "LOCALITY REGIONAL BY ROW" in ddl:
         add(None, "REGIONAL_BY_ROW", "high", "REGIONAL BY ROW table",
             "design Spanner multi-region config / geo-partitioning")
+    elif "LOCALITY REGIONAL BY TABLE IN" in ddl:
+        add(None, "REGIONAL_BY_TABLE", "medium", "REGIONAL BY TABLE homed outside the primary region",
+            "Spanner multi-region config with a matching default leader / placement")
     elif "LOCALITY GLOBAL" in ddl:
         add(None, "GLOBAL_TABLE", "medium", "GLOBAL table (low-latency reads everywhere)",
             "Spanner multi-region with read replicas")
     if "TTL_EXPIRE_AFTER" in ddl or "TTL_EXPIRATION_EXPRESSION" in ddl:
-        add(None, "ROW_TTL", "medium", "row-level TTL", "Spanner row deletion policy (TTL)")
+        add(None, "ROW_TTL", "medium", "row-level TTL (its deletes flow through the changefeed)",
+            "Spanner row deletion policy (TTL); set ttl_disable_changefeed_replication at source to "
+            "leave expiry to Spanner, otherwise TTL deletes are replicated")
     if count_families(t.create_statement) > 1:
         add(None, "COLUMN_FAMILIES", "high",
             "multiple column families: changefeeds need split_column_families, which CDC apply does not "

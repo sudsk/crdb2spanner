@@ -91,7 +91,9 @@ def convert(
         if strict_shadow:
             tmap.shadow_table = f"{shadow_prefix}{tmap.target}"
             res.tables_ddl.append(_shadow_ddl(tmap))
-        res.index_ddl.extend(_index_ddl(t, tmap, res))
+        idx = _index_ddl(t, tmap, res)
+        tmap.index_count = len(idx)
+        res.index_ddl.extend(idx)
         res.post_ddl.extend(_post_ddl(t, tmap, catalog, only, exclude))
         tmaps.append(tmap)
 
@@ -103,14 +105,39 @@ def convert(
     return res
 
 
+def is_shard_column(name: str) -> bool:
+    return name.startswith("crdb_internal_") and "_shard_" in name
+
+
+# Spanner (PostgreSQL dialect) cannot use these types in a primary key or index key
+NON_KEY_TYPES = ("jsonb", "numeric", "real")
+
+
+def non_keyable(spanner_type: str) -> bool:
+    t = spanner_type.lower()
+    return t.endswith("[]") or t.split("(")[0] in NON_KEY_TYPES
+
+
 def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_native: bool):
     if not t.primary_key:
         res.issues.append(Issue(t.name, None, "blocker", "table has no primary key"))
+    # hash-sharded PK: drop the shard column, keep the real key columns
+    pk = [c for c in t.primary_key if not is_shard_column(c)]
+    if pk != list(t.primary_key):
+        res.issues.append(Issue(t.name, None, "info",
+                                "hash-sharded PK: shard column dropped, Spanner key is " + ", ".join(pk)))
 
     cols: list[ColumnMap] = []
     lines: list[str] = []
+    implicit = [c for c in t.implicit_key if not is_shard_column(c)]
+    if implicit:
+        res.issues.append(Issue(t.name, None, "high",
+                                f"implicit key columns {implicit} (REGIONAL BY ROW / partitioning) kept as "
+                                "ordinary columns, not in the Spanner key - review Spanner multi-region design"))
     for c in sorted(t.columns, key=lambda c: c.ordinal):
-        if c.hidden and c.name not in t.primary_key:
+        if is_shard_column(c.name):
+            continue
+        if c.hidden and c.name not in pk and c.name not in implicit:
             continue  # hash-shard columns, other hidden internals
         if c.virtual:
             res.issues.append(Issue(t.name, c.name, "medium",
@@ -125,7 +152,7 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         if tm.severity:
             res.issues.append(Issue(t.name, c.name, tm.severity, tm.note or tm.spanner_type))
 
-        if c.name in t.primary_key and (c.default or "").lower().startswith("unique_rowid()"):
+        if c.name in pk and (c.default or "").lower().startswith("unique_rowid()"):
             if c.hidden:
                 transform = "bit_reverse"
                 res.issues.append(Issue(
@@ -146,18 +173,22 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         cols.append(ColumnMap(source=c.name, target=c.name, spanner_type=tm.spanner_type,
                               transform=transform, nullable=c.nullable))
         line = f"  {q(c.name)} {tm.spanner_type}"
-        if not c.nullable or c.name in t.primary_key:
+        if not c.nullable or c.name in pk:
             line += " NOT NULL"
         dflt = _default_expr(c)
-        if dflt and c.name not in t.primary_key:
+        if dflt and c.name not in pk:
             line += f" DEFAULT ({dflt})"
         elif c.default and not c.hidden and not (c.default or "").lower().startswith(
                 ("unique_rowid()", "nextval(")) and not dflt:
             res.issues.append(Issue(t.name, c.name, "info", f"default {c.default!r} not migrated"))
         lines.append(line)
 
-    pk = ", ".join(q(p) for p in t.primary_key)
-    lines.append(f"  PRIMARY KEY ({pk})")
+    for c in cols:
+        if c.source in pk and non_keyable(c.spanner_type):
+            res.issues.append(Issue(t.name, c.source, "blocker",
+                                    f"PK column type {c.spanner_type} cannot be a Spanner key column"))
+    pk_sql = ", ".join(q(p) for p in pk)
+    lines.append(f"  PRIMARY KEY ({pk_sql})")
     ddl = f"CREATE TABLE {q(t.name)} (\n" + ",\n".join(lines) + "\n)"
 
     if "LOCALITY REGIONAL BY ROW" in t.create_statement.upper():
@@ -167,7 +198,9 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         res.issues.append(Issue(t.name, None, "medium",
                                 "row-level TTL - recreate as Spanner row deletion policy"))
 
-    return TableMap(source=t.name, target=t.name, columns=cols, primary_key=list(t.primary_key)), ddl
+    full_key = list(t.implicit_key) + list(t.primary_key)
+    return TableMap(source=t.name, target=t.name, columns=cols, primary_key=pk,
+                    source_key=full_key if full_key != pk else None), ddl
 
 
 def _shadow_ddl(tmap: TableMap) -> str:
@@ -195,9 +228,22 @@ def _index_ddl(t: Table, tmap: TableMap, res: ConversionResult) -> list[str]:
         # implicit PK suffix columns are already excluded at introspection (SHOW INDEXES
         # implicit=true); hash-shard columns are dropped here - Spanner distributes itself.
         dirs = i.directions or ["ASC"] * len(i.columns)
-        pairs = [(c, d) for c, d in zip(i.columns, dirs) if not c.startswith("crdb_internal_")]
+        pairs = [(c, d) for c, d in zip(i.columns, dirs)
+                 if not c.startswith("crdb_internal_") and c not in t.implicit_key]
+        mapped = {c.source: c for c in tmap.columns}
+        missing = [c for c, _ in pairs if c not in mapped]
+        if missing:
+            res.issues.append(Issue(t.name, None, "medium",
+                                    f"index {i.name} skipped - uses columns not migrated ({', '.join(missing)})"))
+            continue
+        bad = [c for c, _ in pairs if non_keyable(mapped[c].spanner_type)]
+        if bad:
+            res.issues.append(Issue(t.name, None, "medium",
+                                    f"index {i.name} skipped - Spanner cannot index {', '.join(bad)} "
+                                    f"({', '.join(mapped[c].spanner_type for c in bad)})"))
+            continue
         parts = [f"{q(c)}{' DESC' if d.upper() == 'DESC' else ''}" for c, d in pairs]
-        storing = [s for s in i.storing if s not in pk_set]
+        storing = [s for s in i.storing if s not in pk_set and s in mapped]
         stmt = f"CREATE {'UNIQUE ' if i.unique else ''}INDEX {q(i.name)} ON {q(tmap.target)} ({', '.join(parts)})"
         if storing:
             stmt += f" INCLUDE ({', '.join(q(s) for s in storing)})"
