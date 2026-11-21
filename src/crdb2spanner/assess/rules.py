@@ -57,7 +57,7 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
         if d.startswith("nextval("):
             add(c.name, "SEQUENCE_DEFAULT", "high", f"sequence default {c.default}",
                 "CREATE SEQUENCE ... BIT_REVERSED_POSITIVE in Spanner")
-        if c.generated:
+        if c.generated and not (c.hidden and "crdb_internal" in c.name and "shard" in c.name):
             add(c.name, "COMPUTED_COLUMN", "medium",
                 f"{'VIRTUAL' if c.virtual else 'STORED'} computed column: {c.generated}",
                 "VIRTUAL: not migrated, recreate as Spanner generated column; STORED: migrated as a plain column")
