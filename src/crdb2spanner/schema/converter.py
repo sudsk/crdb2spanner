@@ -44,9 +44,25 @@ def valid_spanner_ident(name: str) -> bool:
     return bool(name) and name[0].isascii() and name[0].isalpha()
 
 
+# CockroachDB type names that PostgreSQL / Spanner PG don't know
+_PG_CAST_TYPES = {
+    "string": "text", "int8": "bigint", "int": "bigint", "int4": "integer", "int2": "smallint",
+    "float8": "double precision", "float": "double precision", "float4": "real", "decimal": "numeric",
+    "bool": "boolean", "bytes": "bytea", "timestamptz": "timestamptz", "timestamp": "timestamp",
+    "jsonb": "jsonb", "json": "jsonb", "date": "date", "uuid": "uuid",
+}
+
+
 def strip_casts(expr: str) -> str:
-    """CockroachDB type annotations (x:::TYPE) -> plain PostgreSQL."""
-    return re.sub(r':::"?[\w.]+"?(\[\])?', "", expr)
+    """CockroachDB expression -> PostgreSQL: drop type annotations (``x:::TYPE``) and rename
+    CockroachDB-only type names in casts (``x::STRING`` -> ``x::text``)."""
+    expr = re.sub(r':::"?[\w.]+"?(\[\])?', "", expr)
+
+    def cast(m):
+        t = m.group(1).lower()
+        return "::" + _PG_CAST_TYPES.get(t, m.group(1)) + (m.group(2) or "")
+
+    return re.sub(r'::"?([A-Za-z_][\w.]*)"?(\[\])?', cast, expr)
 
 
 @dataclass

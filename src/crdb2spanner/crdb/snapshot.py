@@ -52,7 +52,8 @@ def gc_ttl_seconds(conn, database: str, table: str) -> int | None:
 # transforms whose values are exported as text: DECIMAL (Parquet cannot hold unbounded precision
 # or NaN) and text-mapped types (INTERVAL, TIME, INET, BIT, ENUM...) so the snapshot renders
 # them exactly as the changefeed JSON and the validator (::STRING) do
-STRING_EXPORT = {"decimal": "STRING", "to_text": "STRING", "array:decimal": "STRING[]", "array:to_text": "STRING[]"}
+STRING_EXPORT = {"decimal": "STRING", "to_text": "STRING", "inet": "STRING",
+                 "array:decimal": "STRING[]", "array:to_text": "STRING[]", "array:inet": "STRING[]"}
 
 
 def select_expr(column: str, transform: str | None = None) -> str:

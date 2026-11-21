@@ -25,7 +25,7 @@ Generated from `src/crdb2spanner/schema/types.py` (the code is the source of tru
 | `INTERVAL` | `varchar(64)` | `to_text` | medium | INTERVAL stored as text |
 | `UUID` | `uuid` (native; `uuid_native: false` → `varchar(36)`) | `uuid` |  |  |
 | `JSONB` | `jsonb` | `json` |  |  |
-| `INET` | `varchar(64)` | `to_text` | medium | INET stored as text |
+| `INET` | `varchar(64)` | `inet` | medium | INET stored as text; host addresses without `/32` or `/128` |
 | `BIT` | `varchar` | `to_text` | medium | BIT stored as text |
 | `VARBIT` | `varchar` | `to_text` | medium | VARBIT stored as text |
 | `GEOMETRY` | `varchar` | `to_text` | high | Geospatial stored as WKT/EWKB text |
