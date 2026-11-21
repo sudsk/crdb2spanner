@@ -91,12 +91,15 @@ def _latest(events):
     return max(events, key=lambda e: e.hlc) if events else None
 
 
-def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int):
+def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int, paths: list[str] | None = None):
     """Changefeed cloud-storage sink: <base>/<table>/[YYYY-MM-DD/]<ts>-...-<topic>-<n>.ndjson
-    plus <ts>.RESOLVED files."""
+    plus <ts>.RESOLVED files. ``paths`` restricts the read to an explicit file list (local follow)."""
     root = f"{base.rstrip('/')}/{table}"
     patterns = [f"{root}/*", f"{root}/*/*"]
     matches = []
+    if paths is not None:
+        matches.append(p | f"Files[{table}]" >> beam.Create(sorted(paths)) | f"MatchAll[{table}]" >> fileio.MatchAll())
+        patterns = []
     for i, pat in enumerate(patterns):
         if follow:
             m = p | f"Watch[{table}/{i}]" >> fileio.MatchContinuously(pat, interval=interval_s)
@@ -117,7 +120,8 @@ def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int):
 
 
 def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[str], *,
-          source: str, streaming: bool, follow: bool = False, poll_interval_s: int = 10):
+          source: str, streaming: bool, follow: bool = False, poll_interval_s: int = 10,
+          paths: dict[str, list[str]] | None = None):
     mapping_json = mapping.to_json()
     events, dlqs, resolved = [], [], []
 
@@ -131,7 +135,8 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
         elif source == "files":
             if not cfg.cdc.files_read_path:
                 raise ValueError("cdc.files_read_path is required for source=files")
-            raw = _read_files_table(p, cfg.cdc.files_read_path, table, follow, poll_interval_s)
+            raw = _read_files_table(p, cfg.cdc.files_read_path, table, follow, poll_interval_s,
+                                    None if paths is None else paths.get(table, []))
         else:
             raise ValueError(source)
 
@@ -170,6 +175,64 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
     _ = dlqs | "FlattenDlq" >> beam.Flatten() | "Dlq" >> WriteDlq(cfg.apply, "cdc", streaming)
 
 
+def list_cdc_files(base: str, tables: list[str], settle_s: float = 0) -> dict[str, list[str]]:
+    """Readable changefeed files per table; ``settle_s`` skips files modified in the last few seconds
+    (possibly still being written)."""
+    import time
+
+    from apache_beam.io.filesystems import FileSystems
+
+    now = time.time()
+    out = {}
+    for t in tables:
+        root = f"{base.rstrip('/')}/{t}"
+        res = FileSystems.match([f"{root}/*", f"{root}/*/*"])
+        out[t] = sorted(
+            m.path for r in res for m in r.metadata_list
+            if m.path.endswith((".ndjson", ".json", ".RESOLVED")) and readable(m.path)
+            and (not settle_s or not m.last_updated_in_seconds or now - m.last_updated_in_seconds >= settle_s))
+    return out
+
+
+def follow_locally(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list[str], *,
+                   poll_interval_s: float = 5, settle_s: float = 2, max_rounds: int | None = None):
+    """``--follow`` on a local runner: poll for new changefeed files and apply each new set with a
+    short batch pipeline.
+
+    Beam's local streaming runners are unreliable with continuously-matched files (version-dependent
+    failures in Watch/GroupByKey replacement), so locally we poll instead. Re-applying a file is safe
+    (strict mode keeps last-writer-wins across rounds and restarts), so a restarted follower simply
+    starts from the beginning. Dataflow uses the real streaming pipeline.
+    """
+    import time
+
+    seen: set[str] = set()
+    rounds = 0
+    print(f"following {cfg.cdc.files_read_path} every {poll_interval_s}s (local polling mode)", flush=True)
+    while max_rounds is None or rounds < max_rounds:
+        rounds += 1
+        found = list_cdc_files(cfg.cdc.files_read_path, tables, settle_s)
+        new = {t: [f for f in fs if f not in seen] for t, fs in found.items()}
+        n = sum(len(v) for v in new.values())
+        if n:
+            opts = PipelineOptions(beam_args, save_main_session=False)
+            pick_local_runner(opts, streaming=False)
+            p = beam.Pipeline(options=opts)
+            build(p, cfg, mapping, tables, source="files", streaming=False, paths=new)
+            p.run().wait_until_finish()
+            for v in new.values():
+                seen.update(v)
+            print(f"round {rounds}: applied {n} new file(s)", flush=True)
+        time.sleep(poll_interval_s)
+
+
+def _local_runner(beam_args: list[str]) -> bool:
+    from .common.io import LOCAL_RUNNERS
+
+    runner = PipelineOptions(beam_args).view_as(StandardOptions).runner
+    return runner in LOCAL_RUNNERS or runner in ("FnApiRunner", "PrismRunner", "BundleBasedDirectRunner")
+
+
 def count_cdc_files(base: str, tables: list[str]) -> dict[str, int]:
     """Number of changefeed files visible to the pipeline, per table (files source)."""
     from apache_beam.io.filesystems import FileSystems
@@ -186,6 +249,8 @@ def count_cdc_files(base: str, tables: list[str]) -> dict[str, int]:
 
 def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list[str], *,
         source: str, follow: bool = False):
+    if source == "files" and follow and _local_runner(beam_args) and not os.environ.get("C2S_LOCAL_STREAMING"):
+        return follow_locally(cfg, mapping, tables, beam_args)
     if source == "files" and not follow:
         counts = count_cdc_files(cfg.cdc.files_read_path, tables)
         log.info("CDC files per table: %s", counts)
