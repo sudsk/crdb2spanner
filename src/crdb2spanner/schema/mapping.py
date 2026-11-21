@@ -35,6 +35,7 @@ class TableMap:
     shadow_table: str | None = None
     # full source PK incl. columns dropped in Spanner (hash-shard columns); changefeed keys carry them
     source_key: list[str] | None = None
+    index_count: int = 0  # secondary indexes on the target table (for mutation counting)
 
     # compiled lazily, not serialised
     _fns: dict[str, Callable[[Any], Any]] = field(default_factory=dict, repr=False, compare=False)
@@ -86,6 +87,12 @@ class TableMap:
                 tgt = self.col(s).target
                 if tgt not in out:
                     out[tgt] = self.fn(s)(v)
+            # non-key columns carried only in the full source key (e.g. crdb_region)
+            if self.source_key and len(key) == len(self.source_key):
+                mapped = {c.source for c in self.columns}
+                for s, v in zip(self.source_key, key):
+                    if s in mapped and s not in self.primary_key and self.col(s).target not in out:
+                        out[self.col(s).target] = self.fn(s)(v)
         return out
 
 
@@ -117,7 +124,7 @@ class MappingSpec:
                 source=t["source"], target=t["target"],
                 columns=[ColumnMap(**c) for c in t["columns"]],
                 primary_key=t["primary_key"], shadow_table=t.get("shadow_table"),
-                source_key=t.get("source_key"),
+                source_key=t.get("source_key"), index_count=t.get("index_count", 0),
             )
             for t in d["tables"]
         ]

@@ -134,7 +134,10 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
                                         cfg.apply.max_batch_latency_s if streaming else None)
         | "Apply" >> beam.ParDo(SpannerApply(
             cfg.target.project, cfg.target.instance, cfg.target.database, mapping_json,
-            mode=cfg.apply.mode, emulator_host=cfg.target.emulator_host)).with_outputs(DLQ, main="ok")
+            mode=cfg.apply.mode, emulator_host=cfg.target.emulator_host,
+                max_commit_delay_ms=cfg.apply.max_commit_delay_ms, commit_timeout_s=cfg.apply.commit_timeout_s,
+                max_mutations=cfg.apply.max_mutations_per_commit,
+                transaction_tag=f"c2s-{cfg.job_id}")).with_outputs(DLQ, main="ok")
     )
     dlqs.append(written[DLQ])
     _ = dlqs | "FlattenDlq" >> beam.Flatten() | "Dlq" >> WriteDlq(cfg.apply, "cdc", streaming)

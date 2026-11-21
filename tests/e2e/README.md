@@ -51,8 +51,24 @@ Probe tables live in a separate job (`job.torture-probes.yaml`). Their steps are
 ## Notes
 
 - Everything runs against the **Spanner emulator**. Repeat on a real 100-PU PostgreSQL-dialect instance (`examples/job.gcp.yaml`) before trusting performance or IAM behaviour.
-- Single-node CockroachDB can't test `REGIONAL BY ROW`, which needs a multi-region cluster. The converter covers it in unit tests only.
+- `REGIONAL BY ROW` needs a multi-region cluster, so it has its own run: see *Multi-region* below.
 - If `changefeed create` fails with a licence error, see `docs/test-environment.md` §5.
+
+## Multi-region
+
+```bash
+./scripts/e2e_multiregion.sh      # or: make e2e-multiregion
+```
+
+This starts a separate 3-node CockroachDB cluster with nodes in `europe-west2`, `us-east1` and `asia-south1` (compose profile `multiregion`, SQL on port 26258). It creates a `REGIONAL BY ROW` table, a `GLOBAL` table and a `REGIONAL BY TABLE` table, then runs assess, convert, snapshot, bulk load and CDC, and validates the result. The CDC scenario includes **moving rows between regions**.
+
+How multi-region tables are handled:
+- CockroachDB adds a hidden `crdb_region` column to the front of the physical primary key.
+- Spanner gets `crdb_region` as an **ordinary `varchar` column**, and the key stays the logical key (`id`). Each row's home region is kept as data, so a later Spanner geo-partitioning design can use it.
+- Changefeed keys that carry the region prefix are handled. `mapping.json` records the full source key as `source_key`.
+- Multi-region *placement* in Spanner (instance config, leader region, geo-partitioning) is a design decision. The tool flags it rather than doing it.
+
+Results go to `.local/e2e/multiregion-results.txt`. The cluster needs about 3 GB of memory. To stop it, run `docker compose --profile multiregion down -v`.
 
 ## Running one step at a time
 
