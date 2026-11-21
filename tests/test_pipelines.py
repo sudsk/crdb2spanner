@@ -185,3 +185,26 @@ def test_count_cdc_files(job):
     (tmp / "cdc" / "users" / "1.RESOLVED").write_text("{}")
     (d / "ignore.tmp").write_text("")
     assert cdc_apply.count_cdc_files(cfg.cdc.files_read_path, ["users", "rides"]) == {"users": 2, "rides": 0}
+
+
+def test_unreadable_cdc_files_are_skipped_not_fatal(job, monkeypatch):
+    import os
+
+    cfg, mapping, tmp = job
+    monkeypatch.setattr(cdc_apply, "SpannerApply", FakeSpannerApply)
+    STORE.clear()
+    d = tmp / "cdc" / "users" / "2026-11-21"
+    d.mkdir(parents=True)
+    (d / "a-users-1.ndjson").write_text(_line(["rome", "u1"], {"id": "u1", "city": "rome", "name": "ok"}, HLC(5)) + "\n")
+    locked = d / "b.RESOLVED"
+    locked.write_text('{"resolved":"9.0"}')
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):  # running as root: permissions are not enforced
+            pytest.skip("permissions not enforced for this user")
+        assert not cdc_apply.readable(str(locked)) and cdc_apply.readable("gs://bkt/x")
+        with TestPipeline() as p:
+            cdc_apply.build(p, cfg, mapping, ["users"], source="files", streaming=False)
+        assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", "u1")): "ok"}
+    finally:
+        locked.chmod(0o644)

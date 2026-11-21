@@ -49,8 +49,21 @@ def gc_ttl_seconds(conn, database: str, table: str) -> int | None:
     return None
 
 
-def export_statement(database: str, schema: str, table: str, columns: list[str], uri: str, t0: str) -> str:
-    cols = ", ".join(_q(c) for c in columns)  # explicit list: includes hidden rowid when mapped
+# transforms whose values are exported as text: DECIMAL (Parquet cannot hold unbounded precision
+# or NaN) and text-mapped types (INTERVAL, TIME, INET, BIT, ENUM...) so the snapshot renders
+# them exactly as the changefeed JSON and the validator (::STRING) do
+STRING_EXPORT = {"decimal": "STRING", "to_text": "STRING", "array:decimal": "STRING[]", "array:to_text": "STRING[]"}
+
+
+def select_expr(column: str, transform: str | None = None) -> str:
+    cast = STRING_EXPORT.get(transform or "")
+    return f"{_q(column)}::{cast} AS {_q(column)}" if cast else _q(column)
+
+
+def export_statement(database: str, schema: str, table: str, columns: list, uri: str, t0: str) -> str:
+    """``columns``: names, or (name, transform) pairs to apply the text casts."""
+    exprs = [select_expr(*c) if isinstance(c, tuple) else _q(c) for c in columns]
+    cols = ", ".join(exprs)  # explicit list: includes hidden rowid when mapped
     return (
         f"EXPORT INTO PARQUET '{uri}' FROM SELECT {cols} FROM "
         f"{_q(database)}.{_q(schema)}.{_q(table)} AS OF SYSTEM TIME '{t0}'"
@@ -66,7 +79,8 @@ def take_snapshot(conn, database: str, schema: str, mapping: MappingSpec, export
     for tm in mapping.tables:
         uri = f"{base.rstrip('/')}/{tm.source}"
         uri_full = f"{uri}?{qs}" if qs else uri
-        stmt = export_statement(database, schema, tm.source, [c.source for c in tm.columns], uri_full, t0)
+        stmt = export_statement(database, schema, tm.source, [(c.source, c.transform) for c in tm.columns],
+                                uri_full, t0)
         log(f"EXPORT {tm.source} AS OF {t0} -> {uri}")
         cur.execute(stmt)
         rows = sum(int(r[1]) for r in cur.fetchall())  # (filename, rows, bytes)
