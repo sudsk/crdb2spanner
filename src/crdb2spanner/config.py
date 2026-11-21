@@ -73,6 +73,9 @@ class CdcConfig:
     resolved_interval: str = "10s"
     min_checkpoint_frequency: str = "10s"
     sink_credentials_b64: str | None = None  # for AUTH=specified; otherwise AUTH=implicit
+    # replicate --source gcs_notify: Pub/Sub subscription receiving Cloud Storage OBJECT_FINALIZE
+    # notifications for files_read_path (projects/P/subscriptions/S)
+    notify_subscription: str | None = None
     extra_options: dict[str, str] = field(default_factory=dict)
 
 

@@ -1,0 +1,43 @@
+# Torture job against real GCP: CockroachDB on the test VM -> Cloud Storage -> Dataflow -> Cloud Spanner
+# (PostgreSQL dialect). Same schema and scenarios as job.torture.yaml.
+#
+#   export GCP_PROJECT=my-project REGION=europe-west2 BUCKET=my-project-c2s SPANNER_INSTANCE=c2s-test
+#   ./scripts/gcp_setup.sh && ./scripts/e2e_gcp.sh
+job_id: torture-gcp
+work_dir: ./.local/jobs
+
+source:
+  database: torture
+  dsn: postgresql://root@localhost:26257/torture?sslmode=disable
+
+target:
+  project: ${GCP_PROJECT}
+  instance: ${SPANNER_INSTANCE:-c2s-test}
+  database: torture
+
+exclude_tables: [wide_families, places]
+
+uuid_native: true
+primary_key_overrides:
+  job_execution_params: [job_execution_id, key_name]
+
+snapshot:
+  # CockroachDB writes the snapshot straight to Cloud Storage with the VM's identity (AUTH=implicit)
+  export_uri: gs://${BUCKET}/torture/snapshot?AUTH=implicit
+  read_path: gs://${BUCKET}/torture/snapshot
+
+cdc:
+  sink: files
+  files_sink_uri: gs://${BUCKET}/torture/cdc?AUTH=implicit
+  files_read_path: gs://${BUCKET}/torture/cdc
+  # bucket notifications for torture/cdc/ -> this subscription (scripts/gcp_setup.sh creates both)
+  notify_subscription: projects/${GCP_PROJECT}/subscriptions/c2s-torture-cdc-files
+  resolved_interval: 10s
+  min_checkpoint_frequency: 10s
+
+apply:
+  mode: strict
+  num_shards: 32
+  batch_size: 500
+  max_batch_latency_s: 2
+  dlq_path: gs://${BUCKET}/torture/dlq

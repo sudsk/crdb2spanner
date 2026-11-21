@@ -225,7 +225,9 @@ def changefeed_cancel(config: Path = ConfigOpt,
 
 @app.command(context_settings=BEAM_CTX)
 def replicate(ctx: typer.Context, config: Path = ConfigOpt,
-              source: Optional[str] = typer.Option(None, help="pubsub | files (default: cdc.sink)"),
+              source: Optional[str] = typer.Option(
+                  None, help="pubsub | files | gcs_notify (default: cdc.sink; gcs_notify = files in Cloud "
+                             "Storage announced by bucket notifications, streaming)"),
               follow: bool = typer.Option(False, help="files source: keep watching for new files"),
               table: Optional[list[str]] = typer.Option(None, "--table", "-t")):
     """Dataflow/Beam CDC apply: changefeed -> Spanner."""
