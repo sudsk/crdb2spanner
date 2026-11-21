@@ -24,7 +24,7 @@ from apache_beam.options.pipeline_options import PipelineOptions, StandardOption
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec
 from .common.envelope import ChangeEvent, EnvelopeError, ResolvedEvent, parse_message
-from .common.io import ShardAndBatch, WriteDlq
+from .common.io import ShardAndBatch, WriteDlq, pick_local_runner
 from .common.lww import LatestWinsDoFn
 from .common.ops import DLQ, EventToOp, dlq_record
 from .common.spanner_sink import SpannerApply
@@ -196,10 +196,11 @@ def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list
     streaming = source == "pubsub" or follow
     if streaming:
         opts.view_as(StandardOptions).streaming = True
+    pick_local_runner(opts, streaming)
     p = beam.Pipeline(options=opts)
     build(p, cfg, mapping, tables, source=source, streaming=streaming, follow=follow)
     result = p.run()
-    if not streaming or opts.view_as(StandardOptions).runner in (None, "DirectRunner"):
+    if not streaming or opts.view_as(StandardOptions).runner in (None, "DirectRunner", "FnApiRunner", "PrismRunner"):
         result.wait_until_finish()
     return result
 

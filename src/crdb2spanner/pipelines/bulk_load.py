@@ -13,7 +13,7 @@ from apache_beam.options.pipeline_options import PipelineOptions
 
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec
-from .common.io import ShardAndBatch, WriteDlq
+from .common.io import ShardAndBatch, WriteDlq, pick_local_runner
 from .common.ops import DLQ, RowToOp
 from .common.spanner_sink import SpannerApply
 
@@ -42,5 +42,6 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, read_path: str
 
 def run(cfg: JobConfig, mapping: MappingSpec, read_path: str, tables: list[str], beam_args: list[str]):
     opts = PipelineOptions(beam_args, save_main_session=False)
+    pick_local_runner(opts, streaming=False)
     with beam.Pipeline(options=opts) as p:
         build(p, cfg, mapping, read_path, tables)
