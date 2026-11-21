@@ -108,7 +108,11 @@ class JobConfig:
     snapshot: SnapshotConfig = field(default_factory=SnapshotConfig)
     apply: ApplyConfig = field(default_factory=ApplyConfig)
     work_dir: str = "./.local/jobs"
-    uuid_native: bool = False  # map UUID -> uuid instead of varchar(36)
+    uuid_native: bool = True  # map UUID -> Spanner uuid (False: varchar(36))
+    # "table.column" or "column" -> new Spanner name (default rule renames names not starting with a letter)
+    rename_columns: dict[str, str] = field(default_factory=dict)
+    # table -> natural key columns to use instead of CockroachDB's hidden rowid
+    primary_key_overrides: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def job_dir(self) -> Path:
@@ -134,5 +138,7 @@ def load_job_config(path: str | os.PathLike) -> JobConfig:
         snapshot=SnapshotConfig(**(raw.get("snapshot") or {})),
         apply=ApplyConfig(**(raw.get("apply") or {})),
         work_dir=raw.get("work_dir", "./.local/jobs"),
-        uuid_native=bool(raw.get("uuid_native", False)),
+        uuid_native=bool(raw.get("uuid_native", True)),
+        rename_columns=raw.get("rename_columns") or {},
+        primary_key_overrides=raw.get("primary_key_overrides") or {},
     )

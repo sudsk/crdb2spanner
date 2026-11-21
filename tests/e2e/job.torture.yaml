@@ -14,6 +14,11 @@ target:
 
 exclude_tables: [wide_families, places]   # probes - see job.torture-probes.yaml
 
+uuid_native: true      # Spanner native uuid; set false if your emulator version rejects the uuid type
+primary_key_overrides:
+  job_execution_params: [job_execution_id, key_name]   # natural key instead of the hidden rowid
+# rename_columns: {"messages._id": "message_id"}       # default rule gives id_
+
 snapshot:
   export_uri: nodelocal://1/torture/snapshot
   read_path: ./.local/extern/torture/snapshot

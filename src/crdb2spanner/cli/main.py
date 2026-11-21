@@ -88,10 +88,13 @@ def convert(config: Path = ConfigOpt,
 
     cfg, jd, st = _ctx(config)
     cat = Catalog.load(jd / "catalog.json")
+    from ..schema.converter import ConvertOptions
+
+    opts = ConvertOptions(uuid_native=cfg.uuid_native, strict_shadow=(cfg.apply.mode == "strict"),
+                          shadow_prefix=cfg.apply.shadow_prefix, rename_columns=cfg.rename_columns,
+                          primary_key_overrides=cfg.primary_key_overrides)
     res = run_convert(cat, only=cfg.tables or None, exclude=cfg.exclude_tables,
-                      strict_shadow=(cfg.apply.mode == "strict"),
-                      shadow_prefix=cfg.apply.shadow_prefix, uuid_native=cfg.uuid_native,
-                      target_database=cfg.target.database)
+                      target_database=cfg.target.database, options=opts)
     for phase in ("tables", "indexes", "post"):
         (jd / f"ddl_{phase}.sql").write_text(res.render(phase))
     (jd / "mapping.json").write_text(res.mapping.to_json())
@@ -172,14 +175,16 @@ def changefeed_create(config: Path = ConfigOpt,
     tables = _tables(cfg, mapping, table)
     if dry_run:
         for t in tables:
-            typer.echo(create_statement(cfg.source.database, cfg.source.schema, t, cfg.cdc, cursor) + ";")
+            typer.echo(create_statement(cfg.source.database, cfg.source.schema, t, cfg.cdc, cursor,
+                                        diff=mapping.table(t).key_from_row) + ";")
         return
     with connect(cfg.source.resolve_dsn()) as conn:
         for t in tables:
             if t in st.changefeeds:
                 typer.echo(f"{t}: changefeed {st.changefeeds[t]} already recorded, skipping")
                 continue
-            jid = create(conn, cfg.source.database, cfg.source.schema, t, cfg.cdc, cursor)
+            jid = create(conn, cfg.source.database, cfg.source.schema, t, cfg.cdc, cursor,
+                         diff=mapping.table(t).key_from_row)
             st.changefeeds[t] = jid
             typer.echo(f"{t}: changefeed job {jid}")
     st.advance(jd, "REPLICATING", cursor=cursor)
@@ -358,6 +363,27 @@ def truncate_target(config: Path = ConfigOpt, table: Optional[list[str]] = typer
         typer.echo("would empty: " + ", ".join(names) + "\ndry run - pass --yes to delete")
         return
     truncate(cfg.target, names, log=typer.echo)
+
+
+@app.command()
+def wave(template: Path = typer.Option(..., "--template", exists=True, dir_okay=False,
+                                       help="job YAML with {db} placeholders"),
+         db: Optional[list[str]] = typer.Option(None, "--db", help="database name (repeatable)"),
+         databases_file: Optional[Path] = typer.Option(None, "--databases-file", exists=True,
+                                                       help="one database name per line"),
+         steps: str = typer.Option("assess,convert", help="comma-separated: assess,convert"),
+         name: str = typer.Option("wave1", "--name", help="wave name (output folder)"),
+         work_dir: Path = typer.Option(Path("./.local"), help="where waves/<name>/ is written")):
+    """Run assess/convert for many databases from one template; writes a summary table."""
+    from ..control.wave import run as run_wave
+
+    dbs = list(db or [])
+    if databases_file:
+        dbs += [ln.strip() for ln in databases_file.read_text().splitlines()
+                if ln.strip() and not ln.startswith("#")]
+    if not dbs:
+        raise typer.BadParameter("give --db (repeatable) or --databases-file")
+    run_wave(template, dbs, [s.strip() for s in steps.split(",") if s.strip()], name, work_dir, log=typer.echo)
 
 
 @dev_app.command("init-emulator")
