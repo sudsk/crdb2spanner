@@ -79,7 +79,7 @@ rm -rf .local/jobs/torture .local/jobs/torture-probes .local/dlq/torture .local/
 step "1. Create torture schema + seed data"
 must crdb_file tests/e2e/torture_schema.sql
 must crdb_file tests/e2e/torture_seed.sql
-for t in customers '"Order"' order_items events audit_log readings type_zoo '"user"'; do
+for t in customers '"Order"' order_items events audit_log readings type_zoo '"user"' messages job_execution job_execution_params; do
   echo "  $t: $(crdb_q "SELECT count(*) FROM $t")"
 done
 
@@ -96,12 +96,23 @@ want = {
     ("audit_log", "MONOTONIC_PK"), ("audit_log", "HASH_SHARDED"),
     ("readings", "HASH_SHARDED"), ("readings", "TYPE_INTERVAL"), ("readings", "TYPE_TIME"),
     ("type_zoo", "TYPE_INET"), ("type_zoo", "TYPE_BIT"),
+    ("messages", "INVALID_IDENTIFIER"), ("messages", "EXPRESSION_INDEX"),
+    ("job_execution", "SEQUENCE_DEFAULT"), ("job_execution", "DUPLICATE_INDEX"),
+    ("job_execution", "CHECK_CONSTRAINTS"), ("job_execution_params", "HIDDEN_ROWID_PK"),
+    ("messages", "NAME_COLLISION"), (None, "SEQUENCES"),
 }
 missing = sorted(want - got)
 print("missing findings:", missing) if missing else print("all expected findings present")
 sys.exit(1 if missing else 0)
 EOF
 must c2s convert -c "$CFG"
+check "convert: _id renamed, sequences + expression column generated" bash -c "
+  grep -q 'id_ varchar NOT NULL' .local/jobs/torture/ddl_tables.sql &&
+  grep -q 'CREATE SEQUENCE job_execution_seq BIT_REVERSED_POSITIVE' .local/jobs/torture/ddl_tables.sql &&
+  grep -q 'GENERATED ALWAYS AS (lower(sender_email)) STORED' .local/jobs/torture/ddl_tables.sql &&
+  grep -q 'PRIMARY KEY (job_execution_id, key_name)' .local/jobs/torture/ddl_tables.sql &&
+  ! grep -q job_status_dup_idx .local/jobs/torture/ddl_indexes.sql &&
+  grep -q 'ADD TTL INTERVAL' .local/jobs/torture/ddl_post.sql"
 must c2s schema apply -c "$CFG" --phase tables
 
 step "3. Snapshot (EXPORT AS OF T0) + bulk load"
@@ -127,7 +138,7 @@ step "5.04 hot key: 200 sequential updates of one row"
 check "04_hot_key: apply SQL" bash -c "docker compose exec -T cockroach ./cockroach sql --insecure < '$OUT/04_hot_key.sql' > /dev/null"
 cdc_round "04_hot_key"
 
-for f in 05_big_txn 06_cascade 07_edge_values; do
+for f in 05_big_txn 06_cascade 07_edge_values 10_real_world; do
   check "$f: apply SQL" crdb_file "$SCEN/$f.sql"
   cdc_round "$f"
 done

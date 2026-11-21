@@ -101,6 +101,37 @@ CREATE TABLE "user" (
   display STRING
 );
 
+-- T9  leading-underscore column name, expression index, column-based row TTL,
+--     index name reused on another table (database-wide names in Spanner)
+CREATE TABLE messages (
+  _id               STRING      NOT NULL PRIMARY KEY,
+  body              JSONB,
+  sender_email      STRING,
+  insertedtimestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  INDEX messages_sender_lower_idx ((lower(sender_email))),
+  INDEX by_inserted (insertedtimestamp)
+) WITH (ttl_expiration_expression = 'insertedtimestamp + INTERVAL ''90 days''');
+
+-- T10 sequence-backed key (batch-framework style), standalone sequence, CHECK on a status,
+--     duplicate index, index name clashing with T9
+CREATE SEQUENCE job_execution_seq;
+CREATE SEQUENCE hibernate_sequence;
+CREATE TABLE job_execution (
+  id      INT8        NOT NULL DEFAULT nextval('job_execution_seq') PRIMARY KEY,
+  status  STRING      NOT NULL DEFAULT 'STARTED' CHECK (status IN ('STARTED', 'COMPLETED', 'FAILED')),
+  created TIMESTAMPTZ NOT NULL DEFAULT now(),
+  INDEX by_inserted (created),
+  INDEX job_status_idx (status),
+  INDEX job_status_dup_idx (status)
+);
+
+-- T11 keyless table with a natural key (primary_key_overrides in the job config)
+CREATE TABLE job_execution_params (
+  job_execution_id INT8   NOT NULL,
+  key_name         STRING NOT NULL,
+  value            STRING
+);
+
 -- ===================================== PROBES =====================================
 -- Expected to hit known gaps. Excluded from the main job; run separately so findings
 -- are recorded without blocking the main flow.

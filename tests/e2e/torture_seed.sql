@@ -77,6 +77,16 @@ FROM generate_series(100, 1099) AS g(i);
 INSERT INTO "user" (id, display)
 SELECT 'u-' || i::STRING, 'User ' || i::STRING FROM generate_series(1, 500) AS g(i);
 
+INSERT INTO messages (_id, body, sender_email)
+SELECT 'm-' || i::STRING, jsonb_build_object('n', i), 'Sender' || (i % 20)::STRING || '@Example.com'
+FROM generate_series(1, 1000) AS g(i);
+
+INSERT INTO job_execution (status) SELECT (ARRAY['STARTED', 'COMPLETED', 'FAILED'])[1 + i % 3]
+FROM generate_series(1, 300) AS g(i);
+
+INSERT INTO job_execution_params (job_execution_id, key_name, value)
+SELECT j.id, k, 'v' || j.id::STRING FROM job_execution AS j, unnest(ARRAY['run.id', 'input.file', 'mode']) AS k;
+
 -- probes
 INSERT INTO wide_families (id, a, b, c)
 SELECT i, 'a' || i::STRING, 'b' || i::STRING, i FROM generate_series(1, 200) AS g(i);

@@ -47,6 +47,8 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Mutation-aware commits, commit delay/timeout, transaction tags | `pipelines/common/spanner_sink.py` | Implemented |
 | Multi-region sources (`REGIONAL BY ROW` region kept as a column) | `schema/converter.py`, `scripts/e2e_multiregion.sh` | Implemented, needs a live run |
 | Pub/Sub admin, `count`, `truncate-target` | `control/pubsub_admin.py`, `spanner/data.py` | Implemented |
+| Identifier renames, database-wide names, sequences, `unique_rowid()` → sequence defaults, native `uuid`, expression / duplicate indexes, CHECK, TTL, natural-key overrides | `schema/converter.py` | Implemented, unit-tested; e2e run pending |
+| Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |
 | Metadata DB, cutover gating, dashboards, Terraform | - | M2–M3 |
 | Flex Templates | `templates/` | Scaffold (M3) |
 | Reverse replication | - | M4 |

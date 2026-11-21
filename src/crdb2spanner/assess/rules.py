@@ -38,10 +38,25 @@ def assess(catalog: Catalog, only: list[str] | None = None, exclude: list[str] |
                          "advisory a122372 (changefeed out-of-order emission)",
                          "upgrade the source cluster before CDC, and keep apply.mode=strict"))
 
-    for t in catalog.tables:
-        if (only and t.name not in only) or t.name in exclude:
-            continue
+    if catalog.sequences:
+        f.append(Finding(None, None, "SEQUENCES", "info",
+                         f"{len(catalog.sequences)} sequence(s): {', '.join(catalog.sequences[:10])}"
+                         + (" ..." if len(catalog.sequences) > 10 else ""),
+                         "generated as bit-reversed sequences with SKIP RANGE past their current values"))
+
+    tables = [t for t in catalog.tables if not ((only and t.name not in only) or t.name in exclude)]
+    for t in tables:
         f.extend(_table_rules(t, catalog))
+
+    # index / constraint names must be unique across the whole Spanner database
+    seen: dict[str, str] = {}
+    for t in tables:
+        for name in [i.name for i in t.indexes] + [fk.name for fk in t.foreign_keys] + list(t.check_names):
+            if name.lower() in seen and seen[name.lower()] != t.name:
+                f.append(Finding(t.name, None, "NAME_COLLISION", "info",
+                                 f"{name} is also used on table {seen[name.lower()]}",
+                                 "renamed with a table prefix (Spanner names are database-wide)"))
+            seen.setdefault(name.lower(), t.name)
     return f
 
 
@@ -60,16 +75,22 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
     elif t.has_hidden_rowid_pk:
         add("rowid", "HIDDEN_ROWID_PK", "high",
             "table relies on hidden rowid (unique_rowid) primary key",
-            "add an explicit PK at source, or accept bit-reversed rowid in Spanner")
+            "no source change: rowid becomes the Spanner key (bit-reversed, sequence default), or set "
+            "primary_key_overrides to a natural key")
 
     for c in t.columns:
         d = (c.default or "").lower()
         if c.name in t.primary_key and not c.hidden and d.startswith("unique_rowid()"):
             add(c.name, "MONOTONIC_PK", "high", "PK default unique_rowid() is monotonic",
-                "bit-reversed sequence or UUID in Spanner; app impact if ids are exposed")
+                "generated: bit-reversed sequence default skipping the existing id range; new ids are not "
+                "increasing (app impact if ids are ordered or exposed)")
         if d.startswith("nextval("):
-            add(c.name, "SEQUENCE_DEFAULT", "high", f"sequence default {c.default}",
-                "CREATE SEQUENCE ... BIT_REVERSED_POSITIVE in Spanner")
+            add(c.name, "SEQUENCE_DEFAULT", "medium", f"sequence default {c.default}",
+                "generated: bit-reversed sequence with SKIP RANGE past current values; new values not increasing")
+        if c.name and not c.name[0].isalpha() and not c.hidden:
+            add(c.name, "INVALID_IDENTIFIER", "high", f"column name {c.name!r} must start with a letter in Spanner",
+                "renamed (default: strip leading characters + '_', or rename_columns in the job config); "
+                "application queries / ORM mappings must follow")
         if c.generated and not (c.hidden and "crdb_internal" in c.name and "shard" in c.name):
             add(c.name, "COMPUTED_COLUMN", "medium",
                 f"{'VIRTUAL' if c.virtual else 'STORED'} computed column: {c.generated}",
@@ -103,13 +124,26 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
         add(None, "COLUMN_FAMILIES", "high",
             "multiple column families: changefeeds need split_column_families, which CDC apply does not "
             "support yet (roadmap)", "exclude the table for now; split_column_families support is on the roadmap (no source change needed)")
+    sigs: dict[tuple, str] = {}
     for i in t.indexes:
+        sig = (i.unique, tuple(i.columns), tuple(i.directions), tuple(sorted(i.storing)), i.partial)
+        if sig in sigs:
+            add(None, "DUPLICATE_INDEX", "medium", f"index {i.name} duplicates {sigs[sig]}",
+                "skipped in Spanner (avoids write amplification)")
+        sigs.setdefault(sig, i.name)
+        if any(c.startswith("crdb_internal_idx_expr") for c in i.columns):
+            expr = ", ".join(e for e in (i.expressions or []) if e) or "expression"
+            add(None, "EXPRESSION_INDEX", "medium", f"expression index {i.name} on ({expr})",
+                "generated: stored generated column + index; verify the expression in Spanner")
         if i.inverted:
             add(None, "INVERTED_INDEX", "medium", f"inverted index {i.name}",
                 "Spanner search index or JSON redesign")
         if i.partial:
             add(None, "PARTIAL_INDEX", "medium", f"partial index {i.name} WHERE {i.partial}",
                 "full index, or NULL-filtered index pattern")
+    if t.checks:
+        add(None, "CHECK_CONSTRAINTS", "info", f"{len(t.checks)} CHECK constraint(s)",
+            "generated in the post phase (applied after cutover), CockroachDB casts removed")
     if t.foreign_keys:
         add(None, "FOREIGN_KEYS", "info", f"{len(t.foreign_keys)} foreign key(s)",
             "applied after cutover (post DDL); consider interleaving for parent/child")
