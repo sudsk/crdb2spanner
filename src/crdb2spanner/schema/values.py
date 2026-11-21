@@ -181,6 +181,13 @@ _SCALARS: dict[str, Callable[[Any], Any]] = {
 TEXT_TRANSFORMS = ("to_text", "inet")
 
 
+def renders_as_text(name: str | None) -> bool:
+    """True when CockroachDB should render the column as text for EXPORT and validation
+    (``::STRING``), matching the stored form. Geospatial ``::STRING`` is EWKB hex."""
+    name = (name or "").removeprefix("array:")
+    return name in TEXT_TRANSFORMS or name.startswith("geo:")
+
+
 def get_transform(name: str) -> Callable[[Any], Any]:
     if name.startswith("array:"):
         inner = get_transform(name.split(":", 1)[1])
@@ -193,7 +200,13 @@ def get_transform(name: str) -> Callable[[Any], Any]:
             return [None if x is None else inner(x) for x in v]
 
         return _arr
-    fn = _SCALARS[name]
+    if name.startswith("geo:"):
+        from .geo import to_ewkb_hex
+
+        srid = int(name.split(":", 1)[1] or 0)
+        fn = lambda v: to_ewkb_hex(v, srid)  # noqa: E731
+    else:
+        fn = _SCALARS[name]
 
     def _nullsafe(v):
         return None if v is None else fn(v)

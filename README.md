@@ -41,7 +41,8 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | CDC scenarios 01–10, duplicate replay, pause/resume, poison message → DLQ, schema change stops the changefeed | Passing, all 11 tables exact after every scenario |
 | Secondary indexes, post-cutover FKs + CHECK constraints | Passing |
 | Streaming apply (`--follow`) killed and restarted mid-load | Passing |
-| Probes: column families, geospatial | Known gaps, recorded: column families need `split_column_families`; geography arrives as GeoJSON via CDC vs EWKB via EXPORT |
+| Probes: geospatial | Fix pushed (changefeed GeoJSON converted to the EWKB that EXPORT writes), re-run pending |
+| Probes: column families | Known gap: CockroachDB requires `split_column_families`, which emits one partial event per family |
 | Multi-region (`scripts/e2e_multiregion.sh`) | Not yet run |
 | Real Spanner + Dataflow | Not yet run |
 

@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from ..schema.mapping import MappingSpec
+from ..schema.values import renders_as_text
 
 
 def _q(ident: str) -> str:
@@ -57,7 +58,8 @@ STRING_EXPORT = {"decimal": "STRING", "to_text": "STRING", "inet": "STRING",
 
 
 def select_expr(column: str, transform: str | None = None) -> str:
-    cast = STRING_EXPORT.get(transform or "")
+    cast = STRING_EXPORT.get(transform or "") or (
+        ("STRING[]" if (transform or "").startswith("array:") else "STRING") if renders_as_text(transform) else None)
     return f"{_q(column)}::{cast} AS {_q(column)}" if cast else _q(column)
 
 

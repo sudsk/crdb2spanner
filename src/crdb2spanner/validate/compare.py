@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec, TableMap
-from ..schema.values import TEXT_TRANSFORMS, canonical, from_wire
+from ..schema.values import canonical, from_wire, renders_as_text
 
 
 def _q(ident: str) -> str:
@@ -100,7 +100,7 @@ def _scan_source(conn, cfg: JobConfig, tm: TableMap, as_of: str, buckets: int, k
     norms = normalisers(tm)
     # text-mapped types (INTERVAL, TIME, INET, ENUM...) are rendered by CockroachDB itself,
     # matching what the changefeed JSON / EXPORT emit
-    exprs = [f"{_q(c.source)}::STRING" if c.transform in TEXT_TRANSFORMS else _q(c.source)
+    exprs = [f"{_q(c.source)}::STRING" if renders_as_text(c.transform) else _q(c.source)
              for c in tm.columns]
     sql = (f"SELECT {', '.join(exprs)} FROM {_q(cfg.source.database)}."
            f"{_q(cfg.source.schema)}.{_q(tm.source)} AS OF SYSTEM TIME '{as_of}'")

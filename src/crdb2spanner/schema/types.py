@@ -74,8 +74,8 @@ _SCALAR: dict[str, TypeMapping] = {
     "INET": TypeMapping("varchar(64)", "inet", "medium", "INET stored as text (host addresses without /32 or /128)"),
     "BIT": TypeMapping("varchar", "to_text", "medium", "BIT stored as text"),
     "VARBIT": TypeMapping("varchar", "to_text", "medium", "VARBIT stored as text"),
-    "GEOMETRY": TypeMapping("varchar", "to_text", "high", "Geospatial stored as WKT/EWKB text"),
-    "GEOGRAPHY": TypeMapping("varchar", "to_text", "high", "Geospatial stored as WKT/EWKB text"),
+    "GEOMETRY": TypeMapping("varchar", "geo:0", "high", "Geospatial stored as EWKB hex text"),
+    "GEOGRAPHY": TypeMapping("varchar", "geo:4326", "high", "Geospatial stored as EWKB hex text"),
     "TSVECTOR": TypeMapping("varchar", "to_text", "high", "Use Spanner full-text search instead"),
     "TSQUERY": TypeMapping("varchar", "to_text", "high"),
 }
@@ -103,6 +103,8 @@ def map_type(sql_type: str, enums: dict[str, list[str]] | None = None, uuid_nati
         m = TypeMapping("uuid", "uuid") if uuid_native else TypeMapping("varchar(36)", "uuid")
     elif base in ("DECIMAL", "NUMERIC") and args:
         m = TypeMapping("numeric", "decimal", "info", f"precision/scale {','.join(args)} not enforced")
+    elif base in ("GEOMETRY", "GEOGRAPHY") and args and args[-1].strip().isdigit():
+        m = TypeMapping("varchar", f"geo:{int(args[-1])}", "high", "Geospatial stored as EWKB hex text")
     elif base in _SCALAR:
         m = _SCALAR[base]
     elif base.split(".")[-1].strip('"') == "CRDB_INTERNAL_REGION":
