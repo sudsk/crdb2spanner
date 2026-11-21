@@ -126,7 +126,7 @@ class FakeTxn:
         self.shadow_rows, self.writes, self.deletes = shadow_rows, [], []
 
     def read(self, table, columns, keyset):
-        return [r for r in self.shadow_rows if list(r[:-2]) in keyset.keys]
+        return [r for r in self.shadow_rows if list(r[:-3]) in keyset.keys]
 
     def insert_or_update(self, table, columns, values):
         self.writes.append((table, columns, values))
@@ -142,19 +142,22 @@ def test_strict_mode_skips_ops_older_than_shadow():
     sink._spanner = spanner
     sink.shadow = {"users": ("c2s_shadow_users", ["city", "id"])}
     sink.skipped = sink.applied = type("C", (), {"inc": lambda *a: None})()
-    txn = FakeTxn([["rome", "a", 10, 0]])  # shadow says key (rome,a) last applied at HLC 10
+    # shadow: (rome,a) last applied at HLC 10; (rome,d) deleted at HLC 12
+    txn = FakeTxn([["rome", "a", 10, 0, False], ["rome", "d", 12, 0, True]])
     ops = [
         Op("users", "users", "upsert", ("rome", "a"), {"city": "rome", "id": "a", "name": "stale"}, HLC(8)),
         Op("users", "users", "upsert", ("rome", "b"), {"city": "rome", "id": "b", "name": "fresh"}, HLC(9)),
         Op("users", "users", "delete", ("rome", "c"), None, HLC(11)),
+        # same HLC as the delete: a region move re-inserting the row - must be applied
+        Op("users", "users", "upsert", ("rome", "d"), {"city": "rome", "id": "d", "name": "moved"}, HLC(12)),
     ]
     sink._strict_txn(txn, ops)
     data = [w for w in txn.writes if w[0] == "users"]
     shadow = [w for w in txn.writes if w[0] == "c2s_shadow_users"][0]
-    assert data == [("users", ["city", "id", "name"], [["rome", "b", "fresh"]])]
+    assert data == [("users", ["city", "id", "name"], [["rome", "b", "fresh"], ["rome", "d", "moved"]])]
     assert txn.deletes == [("users", [["rome", "c"]])]
     assert shadow[1] == ["city", "id", "c2s_hlc_wall", "c2s_hlc_logical", "c2s_deleted"]
-    assert sorted(shadow[2]) == [["rome", "b", 9, 0, False], ["rome", "c", 11, 0, True]]
+    assert sorted(shadow[2]) == [["rome", "b", 9, 0, False], ["rome", "c", 11, 0, True], ["rome", "d", 12, 0, False]]
 
 
 def test_validation_buckets_are_order_independent():
@@ -230,3 +233,27 @@ def test_local_follow_polls_and_applies_new_files(job, monkeypatch):
     assert cdc_apply._local_runner([]) and not cdc_apply._local_runner(["--runner", "DataflowRunner"])
     cdc_apply.follow_locally(cfg, mapping, ["users"], [], settle_s=0, max_rounds=3)
     assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", U1)): "v2", ("users", ("rome", U2)): "new"}
+
+
+def test_gcs_notification_routing_and_file_reading(tmp_path):
+    base = "gs://bkt/torture/cdc"
+    ev = {"eventType": "OBJECT_FINALIZE", "bucketId": "bkt"}
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/2026-11-21/a-users-1.ndjson"}, base,
+                                   {"users"}) == ("users", "gs://bkt/torture/cdc/users/2026-11-21/a-users-1.ndjson")
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/1.RESOLVED"}, base, {"users"})
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/rides/x.ndjson"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/snapshot/users/x.parquet"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/.tmp"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({"eventType": "OBJECT_DELETE", "bucketId": "bkt",
+                                    "objectId": "torture/cdc/users/a.ndjson"}, base, {"users"}) is None
+
+    f = tmp_path / "a.ndjson"
+    f.write_text('{"a":1}\n\n{"b":2}\n')
+    assert list(cdc_apply.ReadNotifiedFile().process(("users", str(f)))) == [("users", '{"a":1}'), ("users", '{"b":2}')]
+
+
+def test_parse_accepts_table_line_pairs():
+    line = _line(["rome", "00000000-0000-0000-0000-000000000001"],
+                 {"id": "00000000-0000-0000-0000-000000000001", "city": "rome"}, HLC(5))
+    out = list(cdc_apply.ParseMessage(None).process(("users", line)))
+    assert len(out) == 1 and out[0].table == "users"
