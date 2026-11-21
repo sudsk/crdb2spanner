@@ -16,13 +16,14 @@ def test_convert_tables_and_mapping(movr_catalog):
     res = convert(movr_catalog, target_database="movr")
     ddl = res.render("tables")
     assert "CREATE TABLE users (" in ddl
-    assert "id varchar(36) NOT NULL" in ddl
+    assert "id uuid NOT NULL" in ddl
     assert "PRIMARY KEY (city, id)" in ddl
     assert "revenue numeric" in ddl
     assert "creation_time timestamptz" in ddl
     assert "CREATE TABLE c2s_shadow_users (" in ddl and "c2s_hlc_wall bigint NOT NULL" in ddl
     # hidden rowid becomes an explicit, bit-reversed bigint PK
-    assert "rowid bigint NOT NULL" in ddl
+    assert "rowid bigint NOT NULL DEFAULT (nextval('events_rowid_seq'))" in ddl
+    assert "CREATE SEQUENCE events_rowid_seq BIT_REVERSED_POSITIVE" in ddl
     ev = res.mapping.table("events")
     assert ev.col("rowid").transform == "bit_reverse"
     assert ev.col("took").spanner_type == "varchar(64)"

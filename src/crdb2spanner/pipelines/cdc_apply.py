@@ -14,6 +14,7 @@ Flow (ARCHITECTURE.md 4.6)
 from __future__ import annotations
 
 import logging
+import os
 
 import apache_beam as beam
 from apache_beam.io import fileio
@@ -23,7 +24,7 @@ from apache_beam.options.pipeline_options import PipelineOptions, StandardOption
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec
 from .common.envelope import ChangeEvent, EnvelopeError, ResolvedEvent, parse_message
-from .common.io import ShardAndBatch, WriteDlq
+from .common.io import ShardAndBatch, WriteDlq, pick_local_runner
 from .common.lww import LatestWinsDoFn
 from .common.ops import DLQ, EventToOp, dlq_record
 from .common.spanner_sink import SpannerApply
@@ -60,6 +61,28 @@ class TrackResolved(beam.DoFn):
         yield ev
 
 
+def readable(path: str) -> bool:
+    """Local files written by a container may still be root-only; object stores are always readable."""
+    if "://" in path and not path.startswith("file://"):
+        return True
+    return os.access(path.replace("file://", "", 1), os.R_OK)
+
+
+class SkipUnreadable(beam.DoFn):
+    """Drop files the pipeline user cannot read yet (written after the flush point; the next replay
+    or the watcher picks them up) instead of failing the whole run."""
+
+    def __init__(self):
+        self.skipped = Metrics.counter("cdc", "files_skipped_unreadable")
+
+    def process(self, md):
+        if readable(md.path):
+            yield md
+        else:
+            self.skipped.inc()
+            log.warning("skipping unreadable CDC file (will be picked up later): %s", md.path)
+
+
 def _latest(events):
     events = list(events)
     return max(events, key=lambda e: e.hlc) if events else None
@@ -83,6 +106,7 @@ def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int):
         | f"OnlyCdcFiles[{table}]" >> beam.Filter(
             lambda md: md.path.endswith(".ndjson") or md.path.endswith(".RESOLVED")
             or md.path.endswith(".json"))
+        | f"Readable[{table}]" >> beam.ParDo(SkipUnreadable())
         | f"Open[{table}]" >> fileio.ReadMatches()
         | f"Lines[{table}]" >> beam.FlatMap(
             lambda f: [ln for ln in f.read_utf8().splitlines() if ln.strip()])
@@ -153,7 +177,7 @@ def count_cdc_files(base: str, tables: list[str]) -> dict[str, int]:
         pats = [f"{root}/*", f"{root}/*/*"]
         res = FileSystems.match(pats)
         out[t] = sum(1 for r in res for m in r.metadata_list
-                     if m.path.endswith((".ndjson", ".json", ".RESOLVED")))
+                     if m.path.endswith((".ndjson", ".json", ".RESOLVED")) and readable(m.path))
     return out
 
 
@@ -172,10 +196,11 @@ def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list
     streaming = source == "pubsub" or follow
     if streaming:
         opts.view_as(StandardOptions).streaming = True
+    pick_local_runner(opts, streaming)
     p = beam.Pipeline(options=opts)
     build(p, cfg, mapping, tables, source=source, streaming=streaming, follow=follow)
     result = p.run()
-    if not streaming or opts.view_as(StandardOptions).runner in (None, "DirectRunner"):
+    if not streaming or opts.view_as(StandardOptions).runner in (None, "DirectRunner", "FnApiRunner", "PrismRunner"):
         result.wait_until_finish()
     return result
 

@@ -47,6 +47,7 @@ class ChangeEvent:
     key: tuple
     after: dict | None  # None => delete
     hlc: HLC
+    before: dict | None = None  # previous row image (changefeed WITH diff)
 
     @property
     def is_delete(self) -> bool:
@@ -132,4 +133,7 @@ def parse_message(data: bytes | str, table: str | None = None, topic_prefix: str
         after = None
     if after is not None and not isinstance(after, dict):
         raise EnvelopeError("'after' is not an object")
-    return ChangeEvent(tbl, tuple(key), after, HLC.parse(ts))
+    before = _ci(body, "before")
+    if before is not None and not isinstance(before, dict):
+        before = None
+    return ChangeEvent(tbl, tuple(key), after, HLC.parse(ts), before)

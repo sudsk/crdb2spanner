@@ -27,7 +27,7 @@ import apache_beam as beam
 from apache_beam.metrics import Metrics
 
 from ...schema.mapping import MappingSpec
-from ...schema.values import canonical
+from ...schema.values import canonical, from_wire, wire
 from .envelope import HLC
 from .ops import DLQ, Op, dlq_record
 
@@ -71,15 +71,19 @@ def chunk_by_mutations(ops: list[Op], weights: dict[str, int], strict: bool, max
     return chunks
 
 
+def _wire_row(values) -> list:
+    return [wire(v) for v in values]
+
+
 def _group_mutations(ops: list[Op]):
     upserts: dict[tuple[str, tuple[str, ...]], list[list]] = defaultdict(list)
     deletes: dict[str, list[list]] = defaultdict(list)
     for op in ops:
         if op.kind == "delete":
-            deletes[op.target_table].append(list(op.key))
+            deletes[op.target_table].append(_wire_row(op.key))
         else:
             cols = tuple(op.row.keys())
-            upserts[(op.target_table, cols)].append([op.row[c] for c in cols])
+            upserts[(op.target_table, cols)].append(_wire_row(op.row[c] for c in cols))
     return upserts, deletes
 
 
@@ -174,9 +178,9 @@ class SpannerApply(beam.DoFn):
                 continue
             seen: dict[str, HLC] = {}
             rs = txn.read(table=shadow_table, columns=pk_cols + SHADOW_COLS[:2],
-                          keyset=self._spanner.KeySet(keys=[list(o.key) for o in tops]))
+                          keyset=self._spanner.KeySet(keys=[_wire_row(o.key) for o in tops]))
             for row in rs:
-                k = table + "|" + "|".join(canonical(v) for v in row[: len(pk_cols)])
+                k = table + "|" + "|".join(canonical(from_wire(v)) for v in row[: len(pk_cols)])
                 seen[k] = HLC(int(row[-2]), int(row[-1]))
             for op in tops:
                 prev = seen.get(op.ident())
@@ -186,7 +190,7 @@ class SpannerApply(beam.DoFn):
                 winners.append(op)
                 if op.hlc is not None:
                     shadow_rows[shadow_table].append(
-                        list(op.key) + [op.hlc.wall, op.hlc.logical, op.kind == "delete"])
+                        _wire_row(op.key) + [op.hlc.wall, op.hlc.logical, op.kind == "delete"])
 
         upserts, deletes = _group_mutations(winners)
         for (table, cols), values in upserts.items():

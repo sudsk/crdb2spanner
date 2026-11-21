@@ -37,6 +37,8 @@ class Index:
     inverted: bool = False
     partial: str | None = None  # WHERE predicate
     hash_sharded: bool = False
+    # per key column: the SQL expression for expression-index columns (crdb_internal_idx_expr*), else None
+    expressions: list = field(default_factory=list)
 
 
 @dataclass
@@ -56,6 +58,7 @@ class Table:
     indexes: list[Index] = field(default_factory=list)
     foreign_keys: list[ForeignKey] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
+    check_names: list[str] = field(default_factory=list)  # parallel to checks
     create_statement: str = ""
     estimated_rows: int | None = None
     # implicit leading PK columns (e.g. crdb_region on REGIONAL BY ROW tables); not part of
@@ -82,6 +85,7 @@ class Catalog:
     tables: list[Table] = field(default_factory=list)
     enums: dict[str, list[str]] = field(default_factory=dict)
     sequences: list[str] = field(default_factory=list)
+    sequence_values: dict[str, int] = field(default_factory=dict)  # last value per sequence
     settings: dict[str, str] = field(default_factory=dict)
 
     def table(self, name: str) -> Table:
@@ -106,6 +110,7 @@ class Catalog:
                     indexes=[Index(**i) for i in t.get("indexes", [])],
                     foreign_keys=[ForeignKey(**f) for f in t.get("foreign_keys", [])],
                     checks=t.get("checks", []),
+                    check_names=t.get("check_names", []),
                     create_statement=t.get("create_statement", ""),
                     estimated_rows=t.get("estimated_rows"),
                     implicit_key=t.get("implicit_key", []),
@@ -117,6 +122,7 @@ class Catalog:
             tables=tables,
             enums=d.get("enums", {}),
             sequences=d.get("sequences", []),
+            sequence_values=d.get("sequence_values", {}),
             settings=d.get("settings", {}),
         )
 
@@ -154,7 +160,47 @@ def parse_index_block(create_statement: str) -> dict[str, dict[str, Any]]:
             "inverted": bool(m.group(2)),
             "hash_sharded": "USING HASH" in s.upper(),
             "partial": where.group(1) if where else None,
+            "expressions": _key_expressions(s[m.end():]),
         }
+    return out
+
+
+def _split_top(s: str) -> list[str]:
+    parts, buf, depth, in_str = [], [], 0, False
+    for ch in s:
+        if ch == "'":
+            in_str = not in_str
+        if not in_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+                continue
+        buf.append(ch)
+    if "".join(buf).strip():
+        parts.append("".join(buf).strip())
+    return parts
+
+
+def _key_expressions(rest: str) -> list:
+    """Key list of an index line -> [expression or None per key column]."""
+    rest = rest.strip()
+    if not rest.startswith("("):
+        return []
+    depth, end = 0, -1
+    for i, ch in enumerate(rest):
+        depth += ch == "("
+        depth -= ch == ")"
+        if depth == 0:
+            end = i
+            break
+    out = []
+    for part in _split_top(rest[1:end]):
+        p = re.sub(r"\s+(ASC|DESC)$", "", part.strip(), flags=re.IGNORECASE)
+        out.append(None if re.fullmatch(r'"?[A-Za-z_][\w$]*"?', p) else p)
     return out
 
 
@@ -211,11 +257,18 @@ def introspect(conn, database: str, schema: str = "public", only: list[str] | No
         (schema,),
     )
     sequences = [r[0] for r in cur.fetchall()]
+    sequence_values: dict[str, int] = {}
+    for sname in sequences:
+        try:
+            cur.execute(f'SELECT last_value FROM "{schema}"."{sname}"')
+            sequence_values[sname] = int(cur.fetchone()[0])
+        except Exception:  # noqa: BLE001 - permission or unsupported; converter uses a safe default
+            pass
 
     tables = [_introspect_table(cur, schema, n) for n in names]
     return Catalog(
         database=database, version=version, tables=tables, enums=enums,
-        sequences=sequences, settings=settings,
+        sequences=sequences, sequence_values=sequence_values, settings=settings,
     )
 
 
@@ -273,6 +326,7 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
 
     fks: list[ForeignKey] = []
     checks: list[str] = []
+    check_names: list[str] = []
     cur.execute(f'SHOW CONSTRAINTS FROM "{schema}"."{name}"')
     ccols = [d.name for d in cur.description]
     for row in cur.fetchall():
@@ -293,6 +347,7 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
                 ))
         elif ctype == "CHECK":
             checks.append(details)
+            check_names.append(r["constraint_name"])
 
     est = None
     try:
@@ -308,6 +363,7 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
     return Table(
         name=name, columns=columns, primary_key=pk,
         indexes=[i for i in idx.values() if not i.primary],
-        foreign_keys=fks, checks=checks, create_statement=create_stmt, estimated_rows=est,
+        foreign_keys=fks, checks=checks, check_names=check_names, create_statement=create_stmt,
+        estimated_rows=est,
         implicit_key=implicit_key,
     )

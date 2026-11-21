@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import zlib
 
 import apache_beam as beam
@@ -51,3 +52,28 @@ class WriteDlq(beam.PTransform):
                         shards=1))
         return records | "ToText" >> beam.io.WriteToText(
             f"{self.cfg.dlq_path.rstrip('/')}/{self.prefix}", file_name_suffix=".jsonl")
+
+
+LOCAL_RUNNERS = (None, "DirectRunner", "SwitchingDirectRunner")
+
+
+def pick_local_runner(opts, streaming: bool) -> str | None:
+    """Run local batch pipelines on the FnApiRunner.
+
+    Without ``--runner`` Beam's DirectRunner decides at run time and, depending on the Python
+    and Beam versions, can fall back to the legacy BundleBasedDirectRunner, whose GroupByKey
+    fails with an AssertionError on some versions. Batch pipelines here need nothing that
+    runner offers, so pin the FnApiRunner. ``C2S_LOCAL_RUNNER`` overrides; Dataflow and other
+    explicit runners are left alone. Streaming keeps the DirectRunner (FnApiRunner is batch-only).
+    """
+    from apache_beam.options.pipeline_options import StandardOptions
+
+    so = opts.view_as(StandardOptions)
+    if so.runner not in LOCAL_RUNNERS:
+        return so.runner
+    override = os.environ.get("C2S_LOCAL_RUNNER")
+    if override:
+        so.runner = override
+    elif not streaming:
+        so.runner = "FnApiRunner"
+    return so.runner

@@ -34,7 +34,8 @@ def sink_uri(cdc: CdcConfig, table: str) -> str:
     raise ValueError(f"unknown sink {cdc.sink}")
 
 
-def create_statement(database: str, schema: str, table: str, cdc: CdcConfig, cursor: str) -> str:
+def create_statement(database: str, schema: str, table: str, cdc: CdcConfig, cursor: str,
+                     diff: bool = False) -> str:
     opts = {
         "cursor": f"'{cursor}'",
         "updated": None,
@@ -45,6 +46,8 @@ def create_statement(database: str, schema: str, table: str, cdc: CdcConfig, cur
         "schema_change_policy": "'stop'",
         "format": "'json'",
     }
+    if diff:
+        opts["diff"] = None  # before image: needed when the Spanner key comes from row values
     for k, v in cdc.extra_options.items():
         opts[k] = f"'{v}'" if v not in (None, "") else None
     with_clause = ", ".join(k if v is None else f"{k} = {v}" for k, v in opts.items())
@@ -68,9 +71,10 @@ class ChangefeedJob:
         return max(0.0, now - wall_ns / 1e9)
 
 
-def create(conn, database: str, schema: str, table: str, cdc: CdcConfig, cursor: str) -> int:
+def create(conn, database: str, schema: str, table: str, cdc: CdcConfig, cursor: str,
+           diff: bool = False) -> int:
     cur = conn.cursor()
-    cur.execute(create_statement(database, schema, table, cdc, cursor))
+    cur.execute(create_statement(database, schema, table, cdc, cursor, diff=diff))
     return int(cur.fetchone()[0])
 
 
