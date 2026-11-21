@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (87 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (92 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
 
 ## Why this exists
 
