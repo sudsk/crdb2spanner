@@ -103,14 +103,25 @@ def convert(
     return res
 
 
+def is_shard_column(name: str) -> bool:
+    return name.startswith("crdb_internal_") and "_shard_" in name
+
+
 def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_native: bool):
     if not t.primary_key:
         res.issues.append(Issue(t.name, None, "blocker", "table has no primary key"))
+    # hash-sharded PK: drop the shard column, keep the real key columns
+    pk = [c for c in t.primary_key if not is_shard_column(c)]
+    if pk != list(t.primary_key):
+        res.issues.append(Issue(t.name, None, "info",
+                                "hash-sharded PK: shard column dropped, Spanner key is " + ", ".join(pk)))
 
     cols: list[ColumnMap] = []
     lines: list[str] = []
     for c in sorted(t.columns, key=lambda c: c.ordinal):
-        if c.hidden and c.name not in t.primary_key:
+        if is_shard_column(c.name):
+            continue
+        if c.hidden and c.name not in pk:
             continue  # hash-shard columns, other hidden internals
         if c.virtual:
             res.issues.append(Issue(t.name, c.name, "medium",
@@ -125,7 +136,7 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         if tm.severity:
             res.issues.append(Issue(t.name, c.name, tm.severity, tm.note or tm.spanner_type))
 
-        if c.name in t.primary_key and (c.default or "").lower().startswith("unique_rowid()"):
+        if c.name in pk and (c.default or "").lower().startswith("unique_rowid()"):
             if c.hidden:
                 transform = "bit_reverse"
                 res.issues.append(Issue(
@@ -146,18 +157,18 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         cols.append(ColumnMap(source=c.name, target=c.name, spanner_type=tm.spanner_type,
                               transform=transform, nullable=c.nullable))
         line = f"  {q(c.name)} {tm.spanner_type}"
-        if not c.nullable or c.name in t.primary_key:
+        if not c.nullable or c.name in pk:
             line += " NOT NULL"
         dflt = _default_expr(c)
-        if dflt and c.name not in t.primary_key:
+        if dflt and c.name not in pk:
             line += f" DEFAULT ({dflt})"
         elif c.default and not c.hidden and not (c.default or "").lower().startswith(
                 ("unique_rowid()", "nextval(")) and not dflt:
             res.issues.append(Issue(t.name, c.name, "info", f"default {c.default!r} not migrated"))
         lines.append(line)
 
-    pk = ", ".join(q(p) for p in t.primary_key)
-    lines.append(f"  PRIMARY KEY ({pk})")
+    pk_sql = ", ".join(q(p) for p in pk)
+    lines.append(f"  PRIMARY KEY ({pk_sql})")
     ddl = f"CREATE TABLE {q(t.name)} (\n" + ",\n".join(lines) + "\n)"
 
     if "LOCALITY REGIONAL BY ROW" in t.create_statement.upper():
@@ -167,7 +178,8 @@ def _convert_table(t: Table, catalog: Catalog, res: ConversionResult, uuid_nativ
         res.issues.append(Issue(t.name, None, "medium",
                                 "row-level TTL - recreate as Spanner row deletion policy"))
 
-    return TableMap(source=t.name, target=t.name, columns=cols, primary_key=list(t.primary_key)), ddl
+    return TableMap(source=t.name, target=t.name, columns=cols, primary_key=pk,
+                    source_key=list(t.primary_key) if pk != list(t.primary_key) else None), ddl
 
 
 def _shadow_ddl(tmap: TableMap) -> str:

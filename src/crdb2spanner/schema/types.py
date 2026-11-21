@@ -105,8 +105,9 @@ def map_type(sql_type: str, enums: dict[str, list[str]] | None = None, uuid_nati
         m = TypeMapping("numeric", "decimal", "info", f"precision/scale {','.join(args)} not enforced")
     elif base in _SCALAR:
         m = _SCALAR[base]
-    elif base in enums:
-        m = TypeMapping("varchar(255)", "to_text", "info", f"ENUM {base.lower()} stored as text")
+    elif base.split(".")[-1].strip('"') in enums:
+        m = TypeMapping("varchar(255)", "to_text", "info",
+                        f"ENUM {base.split('.')[-1].strip(chr(34)).lower()} stored as text")
     else:
         m = TypeMapping("varchar", "to_text", "high", f"Unknown type {sql_type}; stored as text")
 
