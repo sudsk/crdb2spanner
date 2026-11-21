@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (87 tests). The full flow now runs against a live CockroachDB v24.3 and the Spanner emulator using the torture suite (`scripts/e2e_torture.sh`), and the remaining failures are being fixed (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (87 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
 
 ## Why this exists
 
@@ -40,7 +40,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Bulk load + validation as of T0 | Passing, all 11 tables exact |
 | CDC scenarios 01–10, duplicate replay, pause/resume, poison message → DLQ, schema change stops the changefeed | Passing, all 11 tables exact after every scenario |
 | Secondary indexes, post-cutover FKs + CHECK constraints | Passing |
-| Streaming apply (`--follow`) killed and restarted mid-load | Fix pushed (local polling follower), re-run pending |
+| Streaming apply (`--follow`) killed and restarted mid-load | Passing |
 | Probes: column families, geospatial | Known gaps, recorded: column families need `split_column_families`; geography arrives as GeoJSON via CDC vs EWKB via EXPORT |
 | Multi-region (`scripts/e2e_multiregion.sh`) | Not yet run |
 | Real Spanner + Dataflow | Not yet run |
