@@ -140,6 +140,26 @@ There are two modes. Both produce **the same artefacts**: Spanner PG-dialect DDL
 3. **Secondary indexes after bulk load.** Building them later is faster.
 4. **Foreign keys and `INTERLEAVE IN PARENT` after cutover.** Use `INTERLEAVE IN` (non-enforcing) during the migration where interleaving is wanted.
 
+**Conversion rules (no source change needed for any of them)**
+
+| Source pattern | Spanner (PostgreSQL dialect) |
+|---|---|
+| Column names not starting with a letter (e.g. `_id`) | Renamed: by default `_id` → `id_`, or per column with `rename_columns`. Flagged, because application queries need to follow |
+| Index, FK and CHECK names reused across tables | Prefixed with the table name, since Spanner names are database-wide |
+| `CREATE SEQUENCE` and `DEFAULT nextval(...)` | `CREATE SEQUENCE … BIT_REVERSED_POSITIVE` plus `ALTER SEQUENCE … SKIP RANGE 1 <max(1e9, last_value×100)>`, with `DEFAULT nextval(...)` kept |
+| `DEFAULT unique_rowid()` | A per-column bit-reversed sequence that skips `1 … 2^61` (the `unique_rowid()` range), with `DEFAULT nextval(...)` |
+| Hidden `rowid` (no PK) | `rowid` becomes the key (bit-reversed values) with a sequence default, or `primary_key_overrides` sets a natural key (changefeed `WITH diff`) |
+| `UUID`, `gen_random_uuid()` | Native `uuid` with `DEFAULT gen_random_uuid()`. With `uuid_native: false` it's `varchar(36)` with `spanner.generate_uuid()` |
+| Literal defaults (`'PENDING':::STRING`, `'[]':::JSONB`, `0:::INT8`) | Typed literals (`'PENDING'::varchar`, `'[]'::jsonb`, `0::bigint`) |
+| Expression index (`lower(email)`) | Stored generated column plus an index on it. The pipelines never write the generated column |
+| Duplicate index | Skipped |
+| Index on jsonb, numeric, real or array columns | Skipped (Spanner can't use them as key columns) |
+| CHECK constraints | Re-created in the post phase with CockroachDB casts removed |
+| Row TTL on a column (`ttl_expiration_expression`) | `ALTER TABLE … ADD TTL INTERVAL 'N days' ON col` in the post phase |
+| `ttl_expire_after` (hidden expiry column) | Flagged: Spanner TTL needs a `timestamptz` column |
+
+`crdb2spanner wave --template … --databases-file …` runs assess and convert for many databases from one template, and writes a summary table per wave.
+
 ### 4.4 Snapshot and bulk load (`pipelines/bulk_load.py`)
 
 **Snapshot**

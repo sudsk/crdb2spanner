@@ -21,6 +21,9 @@ It writes **`.local/e2e/torture-results.txt`** (one line per check) and **`.loca
 | `readings` | **Hash-sharded PK**; TIME, TIMETZ, INTERVAL; DATE and TIMESTAMPTZ at 0001-01-01 and 9999-12-31 | Time types are stored as ISO text. Watch for key-shape mismatches caused by the hidden shard column in the changefeed key |
 | `type_zoo` | Unbounded DECIMAL including NaN; INET; BIT and VARBIT; arrays with NULLs and empty arrays; nested and scalar JSONB; BYTES; 200–300 KB text; emoji and zero-width characters; INT8 min/max keys | Transforms and canonical hashing in validation |
 | `"user"` | Reserved-word name; STRING PK; PK renames | — |
+| `messages` | `_id` column (Spanner names must start with a letter); expression index `lower(sender_email)`; row TTL on a column; index name reused by another table | `_id` → `id_` (or `rename_columns`). The expression becomes a stored generated column plus an index. TTL becomes Spanner `ADD TTL INTERVAL '90 days' ON insertedtimestamp` (post phase). The index is renamed with a table prefix |
+| `job_execution` | Sequence default (`nextval`); standalone sequence; CHECK on a status; duplicate index | `CREATE SEQUENCE … BIT_REVERSED_POSITIVE` plus `SKIP RANGE` past current values, and `DEFAULT nextval(...)`. The CHECK is re-created in the post phase. The duplicate index is skipped |
+| `job_execution_params` | Keyless table with a natural key | `primary_key_overrides` makes `(job_execution_id, key_name)` the Spanner key. The changefeed runs `WITH diff`, so deletes and key changes carry the old key |
 | **Probes:** `wide_families` | Multiple column families | **Known gap:** changefeeds need `split_column_families`, which CDC apply doesn't support yet |
 | **Probes:** `places` | GEOGRAPHY and GEOMETRY | **Unknown:** whether `EXPORT` to Parquet and changefeeds handle these. Mapped to text |
 
@@ -39,6 +42,7 @@ Probe tables live in a separate job (`job.torture-probes.yaml`). Their steps are
 | 05 | One 20k-row multi-table transaction | Large batches; transaction boundaries aren't needed for the final state |
 | 06 | FK cascade delete across three tables | Cascaded deletes arrive and are applied |
 | 07 | Edge values through CDC (NaN, empty and NULL arrays, 300 KB text, year 9999) | JSON-envelope encodings match the Parquet encodings |
+| 10 | Sequence-generated inserts, natural-key changes and deletes on a keyless table, the renamed `_id` column, the expression-indexed column | The before image drives deletes and key moves; renamed and generated columns stay consistent |
 | 6 | Replay every CDC file again | Duplicates are harmless |
 | 7 | Pause changefeeds, write, then resume | Nothing is lost across a pause |
 | 8 | Poison messages in the CDC stream | They land in the DLQ and the pipeline carries on |

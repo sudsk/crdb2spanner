@@ -39,6 +39,22 @@ in_crdb()   { docker compose exec -T cockroach sh -c "$1"; }
 hlc()       { crdb_q "SELECT cluster_logical_timestamp()::STRING"; }
 # CockroachDB writes nodelocal files as root inside the container; make them readable by the pipelines
 share_extern() { in_crdb "chmod -R a+rX /cockroach/cockroach-data/extern 2>/dev/null || true"; }
+show_dlq() {  # one line per dead-lettered record: stage, table, key, error (row values omitted)
+  local files; files=$(find "$1" -type f -name '*.jsonl' 2>/dev/null)
+  [ -z "$files" ] && { echo "  DLQ $1: empty"; return 0; }
+  echo "  DLQ $1:"
+  cat $files | python3 -c '
+import json, sys
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+    except ValueError:
+        continue
+    p = r.get("payload") or {}
+    p = p if isinstance(p, dict) else {}
+    print("   ", r.get("stage"), p.get("table"), p.get("key"), "->", str(r.get("error"))[:300])
+' | sort | uniq -c | head -20
+}
 show_files() { echo "  files under $1:"; find "$1" -type f 2>/dev/null | head -5; echo "  ($(find "$1" -type f 2>/dev/null | wc -l) files)"; }
 feeds_running() { crdb_q "SELECT count(*) FROM [SHOW CHANGEFEED JOBS] WHERE status = 'running' AND $1"; }
 
@@ -79,7 +95,7 @@ rm -rf .local/jobs/torture .local/jobs/torture-probes .local/dlq/torture .local/
 step "1. Create torture schema + seed data"
 must crdb_file tests/e2e/torture_schema.sql
 must crdb_file tests/e2e/torture_seed.sql
-for t in customers '"Order"' order_items events audit_log readings type_zoo '"user"'; do
+for t in customers '"Order"' order_items events audit_log readings type_zoo '"user"' messages job_execution job_execution_params; do
   echo "  $t: $(crdb_q "SELECT count(*) FROM $t")"
 done
 
@@ -96,12 +112,24 @@ want = {
     ("audit_log", "MONOTONIC_PK"), ("audit_log", "HASH_SHARDED"),
     ("readings", "HASH_SHARDED"), ("readings", "TYPE_INTERVAL"), ("readings", "TYPE_TIME"),
     ("type_zoo", "TYPE_INET"), ("type_zoo", "TYPE_BIT"),
+    ("messages", "INVALID_IDENTIFIER"), ("messages", "EXPRESSION_INDEX"),
+    ("job_execution", "SEQUENCE_DEFAULT"), ("job_execution", "DUPLICATE_INDEX"),
+    ("job_execution", "CHECK_CONSTRAINTS"), ("job_execution_params", "HIDDEN_ROWID_PK"),
+    ("messages", "NAME_COLLISION"), (None, "SEQUENCES"),
 }
 missing = sorted(want - got)
 print("missing findings:", missing) if missing else print("all expected findings present")
 sys.exit(1 if missing else 0)
 EOF
 must c2s convert -c "$CFG"
+D=.local/jobs/torture
+check "convert: _id renamed to id_"            grep -q 'id_ varchar NOT NULL' $D/ddl_tables.sql
+check "convert: bit-reversed sequence created" grep -q 'CREATE SEQUENCE job_execution_seq BIT_REVERSED_POSITIVE' $D/ddl_tables.sql
+check "convert: expression index -> generated column" grep -q 'GENERATED ALWAYS AS (lower(sender_email)) STORED' $D/ddl_tables.sql
+check "convert: natural key override"          grep -q 'PRIMARY KEY (job_execution_id, key_name)' $D/ddl_tables.sql
+# job_status_idx and job_status_dup_idx are identical; exactly one survives (catalog order decides which)
+check "convert: duplicate index skipped"       bash -c "[ \$(grep -cE 'job_status_(dup_)?idx' $D/ddl_indexes.sql) -eq 1 ]"
+check "convert: TTL policy generated"          grep -q 'ADD TTL INTERVAL' $D/ddl_post.sql
 must c2s schema apply -c "$CFG" --phase tables
 
 step "3. Snapshot (EXPORT AS OF T0) + bulk load"
@@ -111,6 +139,7 @@ show_files .local/extern/torture/snapshot
 T0=$(python3 -c "import json; print(json.load(open('.local/jobs/torture/snapshot.json'))['t0'])")
 check "bulk load" c2s load -c "$CFG"
 check "validate after bulk load (as of T0)" validate "$T0"
+show_dlq .local/dlq/torture
 
 step "4. Changefeeds (cursor = T0)"
 must c2s changefeed create -c "$CFG"
@@ -127,7 +156,7 @@ step "5.04 hot key: 200 sequential updates of one row"
 check "04_hot_key: apply SQL" bash -c "docker compose exec -T cockroach ./cockroach sql --insecure < '$OUT/04_hot_key.sql' > /dev/null"
 cdc_round "04_hot_key"
 
-for f in 05_big_txn 06_cascade 07_edge_values; do
+for f in 05_big_txn 06_cascade 07_edge_values 10_real_world; do
   check "$f: apply SQL" crdb_file "$SCEN/$f.sql"
   cdc_round "$f"
 done
@@ -167,11 +196,17 @@ if [ -z "${SKIP_STREAMING:-}" ]; then
   ok=1
   for _ in $(seq 1 12); do
     sleep 15
-    if validate "$STOP" >/dev/null 2>&1; then ok=0; break; fi
+    if validate "$STOP" >"$OUT/follow_validate.log" 2>&1; then ok=0; break; fi
   done
   kill -- "-$PID" 2>/dev/null || true
   kill "$SHARER" 2>/dev/null || true
   check "streaming kill/restart: converges (validate)" test "$ok" -eq 0
+  if [ "$ok" -ne 0 ]; then
+    echo "  last validation:"; grep -E "FAIL|different|missing|extra" "$OUT/follow_validate.log" | head -15
+    for f in "$OUT"/follow_1.log "$OUT"/follow_2.log; do
+      echo "  tail $f:"; grep -vE "skipping unreadable" "$f" | tail -8
+    done
+  fi
 else
   record SKIP "streaming kill/restart"
 fi

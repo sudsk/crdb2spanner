@@ -36,6 +36,8 @@ class TableMap:
     # full source PK incl. columns dropped in Spanner (hash-shard columns); changefeed keys carry them
     source_key: list[str] | None = None
     index_count: int = 0  # secondary indexes on the target table (for mutation counting)
+    # Spanner key comes from row values (natural key override), not the changefeed key array
+    key_from_row: bool = False
 
     # compiled lazily, not serialised
     _fns: dict[str, Callable[[Any], Any]] = field(default_factory=dict, repr=False, compare=False)
@@ -71,6 +73,13 @@ class TableMap:
         if len(key) != len(self.primary_key):
             raise ValueError(f"{self.source}: key {key!r} does not match PK {self.primary_key}")
         return tuple(self.fn(c)(v) for c, v in zip(self.primary_key, key))
+
+    def key_of_row(self, row: dict[str, Any]) -> tuple:
+        """Target key from a *source* row dict (natural-key tables)."""
+        missing = [c for c in self.primary_key if c not in row]
+        if missing:
+            raise ValueError(f"{self.source}: row lacks key columns {missing}")
+        return tuple(self.fn(c)(row[c]) for c in self.primary_key)
 
     def convert_row(self, row: dict[str, Any], key: list | tuple | None = None) -> dict[str, Any]:
         """Source row dict -> target row dict (target column names).
@@ -125,6 +134,7 @@ class MappingSpec:
                 columns=[ColumnMap(**c) for c in t["columns"]],
                 primary_key=t["primary_key"], shadow_table=t.get("shadow_table"),
                 source_key=t.get("source_key"), index_count=t.get("index_count", 0),
+                key_from_row=t.get("key_from_row", False),
             )
             for t in d["tables"]
         ]

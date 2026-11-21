@@ -57,6 +57,9 @@ class EventToOp(beam.DoFn):
             self.unknown.inc()
             return
         try:
+            if tm.key_from_row:
+                yield from self._natural_key_ops(tm, ev)
+                return
             key = tm.convert_key(ev.key)
             if ev.is_delete:
                 yield Op(tm.source, tm.target, "delete", key, None, ev.hlc)
@@ -69,7 +72,24 @@ class EventToOp(beam.DoFn):
             self.errors.inc()
             yield beam.pvalue.TaggedOutput(DLQ, dlq_record(
                 "transform", {"table": ev.table, "key": list(ev.key), "after": ev.after,
-                              "hlc": str(ev.hlc)}, e))
+                              "before": ev.before, "hlc": str(ev.hlc)}, e))
+
+
+    @staticmethod
+    def _natural_key_ops(tm, ev: ChangeEvent):
+        """Natural-key tables: the key comes from the row images, not the changefeed key (rowid)."""
+        old_key = tm.key_of_row(ev.before) if ev.before is not None else None
+        if ev.is_delete:
+            if old_key is None:
+                raise ValueError("delete without a before image - create the changefeed WITH diff")
+            yield Op(tm.source, tm.target, "delete", old_key, None, ev.hlc)
+            return
+        row = tm.convert_row(ev.after)
+        key = tm.key_of_row(ev.after)
+        if old_key is not None and old_key != key:
+            # natural key changed: remove the old row (same commit timestamp, different key)
+            yield Op(tm.source, tm.target, "delete", old_key, None, ev.hlc)
+        yield Op(tm.source, tm.target, "upsert", key, row, ev.hlc)
 
 
 class RowToOp(beam.DoFn):

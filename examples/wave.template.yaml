@@ -1,0 +1,26 @@
+# Wave template: {db} is replaced by each database name.
+#   crdb2spanner wave --template examples/wave.template.yaml --databases-file dbs.txt --name wave1
+job_id: "{db}"
+work_dir: ./.local/jobs
+
+source:
+  database: "{db}"
+  dsn: postgresql://${CRDB_USER}:${CRDB_PASSWORD}@${CRDB_HOST}:26257/{db}?sslmode=verify-full&sslrootcert=${CRDB_CA}
+
+target:
+  project: ${GCP_PROJECT}
+  instance: ${SPANNER_INSTANCE:-migration}
+  database: "{db}"
+
+uuid_native: true
+# rename_columns: {"ordermessages._id": "message_id"}
+# primary_key_overrides: {"api_target_operations": ["target_operation_id", "api_operation_id"]}
+
+cdc:
+  sink: files
+  files_sink_uri: gs://${BUCKET}/{db}/cdc?AUTH=implicit
+  files_read_path: gs://${BUCKET}/{db}/cdc
+
+snapshot:
+  export_uri: gs://${BUCKET}/{db}/snapshot?AUTH=implicit
+  read_path: gs://${BUCKET}/{db}/snapshot

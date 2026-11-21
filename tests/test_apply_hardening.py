@@ -158,3 +158,64 @@ def test_crdb_version_parsing_and_advisory_rule():
     fixed = Catalog("db", version="CockroachDB CCL v24.1.4", settings={"kv.rangefeed.enabled": "true"})
     assert any(f.rule == "CRDB_OUT_OF_ORDER_ADVISORY" for f in assess(affected))
     assert not any(f.rule == "CRDB_OUT_OF_ORDER_ADVISORY" for f in assess(fixed))
+
+
+def test_bytes_are_base64_encoded_for_the_spanner_client():
+    import base64
+
+    from crdb2spanner.pipelines.common.spanner_sink import _group_mutations, wire
+
+    raw = bytes(range(256))
+    assert base64.b64decode(wire(raw)) == raw
+    assert wire(b"") == b""
+    assert wire([b"ab", None]) == [base64.b64encode(b"ab"), None]
+    assert wire("text") == "text" and wire(5) == 5
+    ops = [Op("t", "t", "upsert", (b"\x00k",), {"id": b"\x00k", "payload": b"\xff\xfe"}, None),
+           Op("t", "t", "delete", (b"\x01",), None, None)]
+    ups, dels = _group_mutations(ops)
+    assert ups[("t", ("id", "payload"))] == [[base64.b64encode(b"\x00k"), base64.b64encode(b"\xff\xfe")]]
+    assert dels["t"] == [[base64.b64encode(b"\x01")]]
+
+
+def test_local_batch_runs_pin_fnapi_runner(monkeypatch):
+    from apache_beam.options.pipeline_options import PipelineOptions
+
+    from crdb2spanner.pipelines.common.io import pick_local_runner
+
+    monkeypatch.delenv("C2S_LOCAL_RUNNER", raising=False)
+    assert pick_local_runner(PipelineOptions([]), streaming=False) == "FnApiRunner"
+    assert pick_local_runner(PipelineOptions([]), streaming=True) is None
+    assert pick_local_runner(PipelineOptions(["--runner", "DataflowRunner"]), streaming=False) == "DataflowRunner"
+    monkeypatch.setenv("C2S_LOCAL_RUNNER", "PrismRunner")
+    assert pick_local_runner(PipelineOptions([]), streaming=False) == "PrismRunner"
+
+
+def test_from_wire_decodes_bytes_read_back_from_spanner():
+    from crdb2spanner.schema.values import from_wire, wire
+
+    raw = b"\x00\x01\xff"
+    assert from_wire(wire(raw)) == raw
+    assert from_wire([wire(raw), None]) == [raw, None]
+    assert from_wire("s") == "s" and from_wire(1) == 1
+
+
+def test_decimals_go_to_spanner_as_exact_text():
+    from decimal import Decimal
+
+    from crdb2spanner.schema.values import wire
+
+    assert wire(Decimal("12345678901234567890.123456789012345")) == "12345678901234567890.123456789012345"
+    assert wire(Decimal("NaN")) == "NaN"
+    assert wire(Decimal("1E-30")) == "0." + "0" * 29 + "1"
+    assert wire([Decimal("1.5"), None]) == ["1.5", None]
+
+
+def test_validation_rounds_real_columns_to_float32_and_shows_column_diffs():
+    from crdb2spanner.schema.mapping import ColumnMap, TableMap
+    from crdb2spanner.validate.compare import _column_diff, _normalise, normalisers
+
+    tm = TableMap(source="t", target="t", columns=[ColumnMap("id", "id", "bigint"), ColumnMap("r", "r", "real")],
+                  primary_key=["id"])
+    norms = normalisers(tm)
+    assert _normalise([1, 0.1], norms) == [1, _normalise([1, 0.10000000149011612], norms)[1]]
+    assert "r: source=1.0 target=2.0" in _column_diff(tm, ["1", "1.0"], ["1", "2.0"])

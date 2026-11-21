@@ -33,3 +33,10 @@ def test_export_statement_lists_columns_explicitly():
     sql = export_statement("movr", "public", "events", ["rowid", "kind"], "nodelocal://1/snapshot/events", "5.0")
     assert sql == ('EXPORT INTO PARQUET \'nodelocal://1/snapshot/events\' FROM SELECT "rowid", "kind" '
                    'FROM "movr"."public"."events" AS OF SYSTEM TIME \'5.0\'')
+
+
+def test_export_casts_decimal_and_text_types_to_string():
+    sql = export_statement("db", "public", "t", [("id", "int"), ("amount", "decimal"), ("dur", "to_text"),
+                                                ("vals", "array:decimal"), ("doc", "json")], "u", "5.0")
+    assert '"amount"::STRING AS "amount"' in sql and '"dur"::STRING AS "dur"' in sql
+    assert '"vals"::STRING[] AS "vals"' in sql and '"id", ' in sql and '"doc" FROM' in sql

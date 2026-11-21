@@ -19,7 +19,7 @@ from crdb2spanner.pipelines.common.envelope import HLC, ChangeEvent
 from crdb2spanner.pipelines.common.lww import LatestWinsDoFn
 from crdb2spanner.pipelines.common.ops import Op
 from crdb2spanner.schema.converter import convert
-from crdb2spanner.validate.compare import Side, row_digest
+from crdb2spanner.validate.compare import Side
 
 # ------------------------------------------------------------------------------ fakes
 STORE: dict = {}
@@ -161,13 +161,13 @@ def test_validation_buckets_are_order_independent():
     rows = [((i,), [i, f"v{i}"]) for i in range(100)]
     a, b = Side(), Side()
     for k, r in rows:
-        a.add(k, row_digest(r), 16, None)
+        a.add(k, r, 16, None)
     for k, r in reversed(rows):
-        b.add(k, row_digest(r), 16, None)
+        b.add(k, r, 16, None)
     assert a.bucket_sum == b.bucket_sum and a.rows == b.rows == 100
     c = Side()
     for k, r in rows[:-1] + [((99,), [99, "changed"])]:
-        c.add(k, row_digest(r), 16, None)
+        c.add(k, r, 16, None)
     assert sum(1 for x in a.bucket_sum if a.bucket_sum[x] != c.bucket_sum.get(x)) == 1
 
 
@@ -185,3 +185,26 @@ def test_count_cdc_files(job):
     (tmp / "cdc" / "users" / "1.RESOLVED").write_text("{}")
     (d / "ignore.tmp").write_text("")
     assert cdc_apply.count_cdc_files(cfg.cdc.files_read_path, ["users", "rides"]) == {"users": 2, "rides": 0}
+
+
+def test_unreadable_cdc_files_are_skipped_not_fatal(job, monkeypatch):
+    import os
+
+    cfg, mapping, tmp = job
+    monkeypatch.setattr(cdc_apply, "SpannerApply", FakeSpannerApply)
+    STORE.clear()
+    d = tmp / "cdc" / "users" / "2026-11-21"
+    d.mkdir(parents=True)
+    (d / "a-users-1.ndjson").write_text(_line(["rome", "u1"], {"id": "u1", "city": "rome", "name": "ok"}, HLC(5)) + "\n")
+    locked = d / "b.RESOLVED"
+    locked.write_text('{"resolved":"9.0"}')
+    locked.chmod(0)
+    try:
+        if os.access(locked, os.R_OK):  # running as root: permissions are not enforced
+            pytest.skip("permissions not enforced for this user")
+        assert not cdc_apply.readable(str(locked)) and cdc_apply.readable("gs://bkt/x")
+        with TestPipeline() as p:
+            cdc_apply.build(p, cfg, mapping, ["users"], source="files", streaming=False)
+        assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", "u1")): "ok"}
+    finally:
+        locked.chmod(0o644)
