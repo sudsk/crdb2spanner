@@ -1,9 +1,11 @@
 """CDC apply: CockroachDB changefeed messages -> Spanner.
 
 Sources
-  pubsub  one subscription per table (streaming)
-  files   changefeed cloud-storage sink output (gs:// or local nodelocal dir);
-          batch replay by default, ``follow=True`` to watch for new files (streaming)
+  pubsub      one subscription per table (streaming)
+  files       changefeed cloud-storage sink output (gs:// or local nodelocal dir);
+              batch replay by default, ``follow=True`` to watch for new files
+  gcs_notify  changefeed files in Cloud Storage, announced by bucket notifications on one
+              Pub/Sub subscription (streaming; no listing/polling of the bucket)
 
 Flow (ARCHITECTURE.md 4.6)
   parse -> [resolved -> watermark metrics]
@@ -24,7 +26,7 @@ from apache_beam.options.pipeline_options import PipelineOptions, StandardOption
 from ..config import JobConfig
 from ..schema.mapping import MappingSpec
 from .common.envelope import ChangeEvent, EnvelopeError, ResolvedEvent, parse_message
-from .common.io import ShardAndBatch, WriteDlq, pick_local_runner
+from .common.io import ShardAndBatch, WriteDlq, pick_local_runner, ship_package
 from .common.lww import LatestWinsDoFn
 from .common.ops import DLQ, EventToOp, dlq_record
 from .common.spanner_sink import SpannerApply
@@ -34,13 +36,18 @@ RESOLVED = "resolved"
 
 
 class ParseMessage(beam.DoFn):
-    def __init__(self, table: str, topic_prefix: str = ""):
+    """``table=None``: elements are (table, line) pairs (gcs_notify source)."""
+
+    def __init__(self, table: str | None, topic_prefix: str = ""):
         self.table, self.topic_prefix = table, topic_prefix
         self.bad = Metrics.counter("cdc", "parse_errors")
 
     def process(self, data):
+        table = self.table
+        if table is None:
+            table, data = data
         try:
-            ev = parse_message(data, table=self.table, topic_prefix=self.topic_prefix)
+            ev = parse_message(data, table=table, topic_prefix=self.topic_prefix)
         except EnvelopeError as e:
             self.bad.inc()
             yield beam.pvalue.TaggedOutput(DLQ, dlq_record(
@@ -92,6 +99,55 @@ def _latest(events):
     return max(events, key=lambda e: (e.hlc, not e.is_delete)) if events else None
 
 
+def notified_file(attributes: dict, base: str, tables: set[str]):
+    """Cloud Storage notification attributes -> (table, gs:// path) for a changefeed file under
+    ``base`` (gs://bucket/prefix), or None (other events, other prefixes, other tables)."""
+    if attributes.get("eventType") != "OBJECT_FINALIZE":
+        return None
+    path = f"gs://{attributes.get('bucketId')}/{attributes.get('objectId', '')}"
+    root = base.rstrip("/") + "/"
+    if not path.startswith(root) or not path.endswith((".ndjson", ".json", ".RESOLVED")):
+        return None
+    table = path[len(root):].split("/", 1)[0]
+    return (table, path) if table in tables else None
+
+
+class ReadNotifiedFile(beam.DoFn):
+    """(table, path) -> (table, line) for every line of the changefeed file."""
+
+    def __init__(self):
+        self.files = Metrics.counter("cdc", "notified_files")
+
+    def process(self, item):
+        from apache_beam.io.filesystems import FileSystems
+
+        table, path = item
+        self.files.inc()
+        with FileSystems.open(path) as f:
+            for ln in f.read().decode("utf-8").splitlines():
+                if ln.strip():
+                    yield table, ln
+
+
+def _read_notified(p, cfg: JobConfig, tables: list[str]):
+    from apache_beam.io.gcp.pubsub import ReadFromPubSub
+
+    if not cfg.cdc.notify_subscription:
+        raise ValueError("cdc.notify_subscription is required for source=gcs_notify")
+    if not (cfg.cdc.files_read_path or "").startswith("gs://"):
+        raise ValueError("source=gcs_notify needs cdc.files_read_path = gs://bucket/prefix")
+    base, wanted = cfg.cdc.files_read_path, set(tables)
+    return (
+        p
+        | "Notifications" >> ReadFromPubSub(subscription=cfg.cdc.notify_subscription, with_attributes=True)
+        | "ToFile" >> beam.Map(lambda m: notified_file(m.attributes or {}, base, wanted))
+        | "OnlyChangefeedFiles" >> beam.Filter(lambda x: x is not None)
+        # a reshuffle spreads big batches of new files across workers before reading them
+        | "SpreadFiles" >> beam.Reshuffle()
+        | "ReadFile" >> beam.ParDo(ReadNotifiedFile())
+    )
+
+
 def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int, paths: list[str] | None = None):
     """Changefeed cloud-storage sink: <base>/<table>/[YYYY-MM-DD/]<ts>-...-<topic>-<n>.ndjson
     plus <ts>.RESOLVED files. ``paths`` restricts the read to an explicit file list (local follow)."""
@@ -125,6 +181,14 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
           paths: dict[str, list[str]] | None = None):
     mapping_json = mapping.to_json()
     events, dlqs, resolved = [], [], []
+
+    if source == "gcs_notify":
+        parsed = _read_notified(p, cfg, tables) | "Parse" >> beam.ParDo(
+            ParseMessage(None, cfg.cdc.topic_prefix)).with_outputs(DLQ, RESOLVED, main="events")
+        events.append(parsed.events)
+        dlqs.append(parsed[DLQ])
+        resolved.append(parsed[RESOLVED])
+        tables = []
 
     for table in tables:
         if source == "pubsub":
@@ -261,8 +325,11 @@ def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list
                 f"no changefeed files found under {cfg.cdc.files_read_path} - check the changefeeds are "
                 "running and that this user can read the directory (files written by a container may be "
                 "root-only)")
+    beam_args = ship_package(beam_args)
     opts = PipelineOptions(beam_args, save_main_session=False)
-    streaming = source == "pubsub" or follow
+    if source == "gcs_notify":
+        follow = False  # always streaming; the notifications drive it
+    streaming = source in ("pubsub", "gcs_notify") or follow
     if streaming:
         opts.view_as(StandardOptions).streaming = True
     pick_local_runner(opts, streaming)
@@ -271,6 +338,8 @@ def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list
     result = p.run()
     if not streaming or opts.view_as(StandardOptions).runner in (None, "DirectRunner", "FnApiRunner", "PrismRunner"):
         result.wait_until_finish()
+    elif hasattr(result, "job_id"):
+        print(f"streaming job submitted: {result.job_id()}", flush=True)
     return result
 
 

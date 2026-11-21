@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (95 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (97 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
 
 ## Why this exists
 
@@ -44,7 +44,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Probes: geospatial | Fix pushed (changefeed GeoJSON converted to the EWKB that EXPORT writes), re-run pending |
 | Probes: column families | Known gap: CockroachDB requires `split_column_families`, which emits one partial event per family |
 | Multi-region (`scripts/e2e_multiregion.sh`): 3 regions, `REGIONAL BY ROW` / `GLOBAL` / `REGIONAL BY TABLE`, rows moving region | Passing |
-| Real Spanner + Dataflow | Not yet run |
+| Real Spanner + Dataflow (`scripts/e2e_gcp.sh`, [docs/gcp-runbook.md](docs/gcp-runbook.md)): Cloud Storage changefeeds, bucket notifications, Dataflow batch + streaming | Ready to run |
 
 ## Implementation status
 
@@ -98,7 +98,7 @@ crdb2spanner schema apply -c $CFG --phase tables [--create-database]
 crdb2spanner snapshot -c $CFG        # picks T0, EXPORT ... AS OF SYSTEM TIME T0
 crdb2spanner load     -c $CFG [-- <beam/dataflow options>]
 crdb2spanner changefeed create -c $CFG          # cursor = T0, one per table (WITH diff where needed)
-crdb2spanner replicate -c $CFG [--source pubsub|files] [--follow] [-- <beam/dataflow options>]
+crdb2spanner replicate -c $CFG [--source pubsub|files|gcs_notify] [--follow] [-- <beam/dataflow options>]
 
 crdb2spanner schema apply -c $CFG --phase indexes
 crdb2spanner validate -c $CFG [--as-of <HLC>]
@@ -179,6 +179,6 @@ The work is I/O-bound: CockroachDB export and changefeed emission, reading Cloud
 |---|---|
 | M0: Spikes (2 wks) | CockroachDB → SMT schema path; `EXPORT` vs changefeed `initial_scan='only'`; Pub/Sub vs GCS sink throughput; Spanner PG-dialect writes from a Python DoFn |
 | M1: Bulk + CDC MVP | Assess, convert (SMT bridge), snapshot, bulk load, CDC apply, status |
-| M2: Validation and cutover | Chunked-hash validation, DVT integration, cutover gating, runbooks, `gcs_notify` mode (Cloud Storage notifications → Pub/Sub instead of polling) |
+| M2: Validation and cutover | Chunked-hash validation, DVT integration, cutover gating, runbooks |
 | M3: Hardening | Shadow-table strict mode, DLQ reprocessing, Terraform module, dashboards, scale tests |
 | M4: Fallback | Reverse replication with Spanner change streams → CockroachDB |

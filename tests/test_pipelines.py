@@ -233,3 +233,27 @@ def test_local_follow_polls_and_applies_new_files(job, monkeypatch):
     assert cdc_apply._local_runner([]) and not cdc_apply._local_runner(["--runner", "DataflowRunner"])
     cdc_apply.follow_locally(cfg, mapping, ["users"], [], settle_s=0, max_rounds=3)
     assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", U1)): "v2", ("users", ("rome", U2)): "new"}
+
+
+def test_gcs_notification_routing_and_file_reading(tmp_path):
+    base = "gs://bkt/torture/cdc"
+    ev = {"eventType": "OBJECT_FINALIZE", "bucketId": "bkt"}
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/2026-11-21/a-users-1.ndjson"}, base,
+                                   {"users"}) == ("users", "gs://bkt/torture/cdc/users/2026-11-21/a-users-1.ndjson")
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/1.RESOLVED"}, base, {"users"})
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/rides/x.ndjson"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/snapshot/users/x.parquet"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({**ev, "objectId": "torture/cdc/users/.tmp"}, base, {"users"}) is None
+    assert cdc_apply.notified_file({"eventType": "OBJECT_DELETE", "bucketId": "bkt",
+                                    "objectId": "torture/cdc/users/a.ndjson"}, base, {"users"}) is None
+
+    f = tmp_path / "a.ndjson"
+    f.write_text('{"a":1}\n\n{"b":2}\n')
+    assert list(cdc_apply.ReadNotifiedFile().process(("users", str(f)))) == [("users", '{"a":1}'), ("users", '{"b":2}')]
+
+
+def test_parse_accepts_table_line_pairs():
+    line = _line(["rome", "00000000-0000-0000-0000-000000000001"],
+                 {"id": "00000000-0000-0000-0000-000000000001", "city": "rome"}, HLC(5))
+    out = list(cdc_apply.ParseMessage(None).process(("users", line)))
+    assert len(out) == 1 and out[0].table == "users"

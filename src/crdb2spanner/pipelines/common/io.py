@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import zlib
 
@@ -11,6 +12,8 @@ from apache_beam.transforms.window import FixedWindows
 
 from ...config import ApplyConfig
 from .ops import Op
+
+log = logging.getLogger(__name__)
 
 
 def shard_key(op: Op, num_shards: int) -> str:
@@ -77,3 +80,30 @@ def pick_local_runner(opts, streaming: bool) -> str | None:
     elif not streaming:
         so.runner = "FnApiRunner"
     return so.runner
+
+
+_PACKAGING_FLAGS = ("--extra_package", "--extra_packages", "--setup_file", "--sdk_container_image",
+                    "--requirements_file", "--flexrs_goal")
+
+
+def ship_package(beam_args: list[str]) -> list[str]:
+    """Dataflow workers need this package. When submitting to Dataflow from a source checkout with
+    no packaging flag of your own, build a wheel of the checkout and add ``--extra_package``."""
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+
+    joined = " ".join(beam_args)
+    if "DataflowRunner" not in joined or any(f in joined for f in _PACKAGING_FLAGS[:-1]):
+        return beam_args
+    root = Path(__file__).resolve().parents[4]
+    if not (root / "pyproject.toml").exists():
+        log.warning("not running from a source checkout: pass --extra_package or --sdk_container_image "
+                    "so Dataflow workers have crdb2spanner")
+        return beam_args
+    out = Path(tempfile.mkdtemp(prefix="c2s-wheel-"))
+    subprocess.run([sys.executable, "-m", "pip", "wheel", str(root), "--no-deps", "-q", "-w", str(out)], check=True)
+    wheel = next(out.glob("crdb2spanner-*.whl"))
+    log.info("shipping %s to Dataflow workers", wheel.name)
+    return [*beam_args, "--extra_package", str(wheel)]
