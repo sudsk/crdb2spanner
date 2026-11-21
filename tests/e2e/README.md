@@ -53,3 +53,33 @@ Probe tables live in a separate job (`job.torture-probes.yaml`). Their steps are
 - Everything runs against the **Spanner emulator**. Repeat on a real 100-PU PostgreSQL-dialect instance (`examples/job.gcp.yaml`) before trusting performance or IAM behaviour.
 - Single-node CockroachDB can't test `REGIONAL BY ROW`, which needs a multi-region cluster. The converter covers it in unit tests only.
 - If `changefeed create` fails with a licence error, see `docs/test-environment.md` §5.
+
+## Running one step at a time
+
+Every stage is a separate `crdb2spanner` command, so you can run the flow by hand and inspect what happens after each step:
+
+```bash
+CFG=tests/e2e/job.torture.yaml
+sql() { docker compose exec -T cockroach ./cockroach sql --insecure "$@"; }
+share() { docker compose exec -T cockroach chmod -R a+rX /cockroach/cockroach-data/extern; }  # container writes root-only files
+
+docker compose up -d cockroach spanner-emulator pubsub-emulator crdb-init
+sql < tests/e2e/torture_schema.sql && sql < tests/e2e/torture_seed.sql
+
+crdb2spanner dev init-emulator -c $CFG          # emulator instance + PG-dialect database
+crdb2spanner assess  -c $CFG                    # -> .local/jobs/torture/assessment.md
+crdb2spanner convert -c $CFG                    # -> ddl_*.sql, mapping.json
+crdb2spanner schema apply -c $CFG --phase tables
+crdb2spanner snapshot -c $CFG && share          # EXPORT AS OF T0 -> .local/extern/torture/snapshot
+ls -R .local/extern/torture/snapshot | head     # check the Parquet files are visible
+crdb2spanner load     -c $CFG                   # bulk load
+crdb2spanner validate -c $CFG --as-of "$(jq -r .t0 .local/jobs/torture/snapshot.json)"
+
+crdb2spanner changefeed create -c $CFG          # cursor = T0
+sql -d torture < tests/e2e/scenarios/01_dml_mix.sql
+crdb2spanner changefeed list -c $CFG            # wait until lag is a few seconds
+share && crdb2spanner replicate -c $CFG --source files
+crdb2spanner validate -c $CFG
+crdb2spanner status -c $CFG
+crdb2spanner changefeed cancel -c $CFG          # when finished
+```

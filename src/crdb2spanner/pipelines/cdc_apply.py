@@ -140,8 +140,31 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
     _ = dlqs | "FlattenDlq" >> beam.Flatten() | "Dlq" >> WriteDlq(cfg.apply, "cdc", streaming)
 
 
+def count_cdc_files(base: str, tables: list[str]) -> dict[str, int]:
+    """Number of changefeed files visible to the pipeline, per table (files source)."""
+    from apache_beam.io.filesystems import FileSystems
+
+    out = {}
+    for t in tables:
+        root = f"{base.rstrip('/')}/{t}"
+        pats = [f"{root}/*", f"{root}/*/*"]
+        res = FileSystems.match(pats)
+        out[t] = sum(1 for r in res for m in r.metadata_list
+                     if m.path.endswith((".ndjson", ".json", ".RESOLVED")))
+    return out
+
+
 def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list[str], *,
         source: str, follow: bool = False):
+    if source == "files" and not follow:
+        counts = count_cdc_files(cfg.cdc.files_read_path, tables)
+        log.info("CDC files per table: %s", counts)
+        print("CDC files per table: " + ", ".join(f"{t}={n}" for t, n in counts.items()))
+        if sum(counts.values()) == 0:
+            raise RuntimeError(
+                f"no changefeed files found under {cfg.cdc.files_read_path} - check the changefeeds are "
+                "running and that this user can read the directory (files written by a container may be "
+                "root-only)")
     opts = PipelineOptions(beam_args, save_main_session=False)
     streaming = source == "pubsub" or follow
     if streaming:

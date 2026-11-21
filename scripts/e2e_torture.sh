@@ -37,6 +37,9 @@ crdb_q()    { crdb -d torture --format=csv -e "$1" | tail -n +2; }
 crdb_file() { crdb < "$1"; }
 in_crdb()   { docker compose exec -T cockroach sh -c "$1"; }
 hlc()       { crdb_q "SELECT cluster_logical_timestamp()::STRING"; }
+# CockroachDB writes nodelocal files as root inside the container; make them readable by the pipelines
+share_extern() { in_crdb "chmod -R a+rX /cockroach/cockroach-data/extern 2>/dev/null || true"; }
+show_files() { echo "  files under $1:"; find "$1" -type f 2>/dev/null | head -5; echo "  ($(find "$1" -type f 2>/dev/null | wc -l) files)"; }
 feeds_running() { crdb_q "SELECT count(*) FROM [SHOW CHANGEFEED JOBS] WHERE status = 'running' AND $1"; }
 
 # wait until every running changefeed whose sink matches $2 has a high-water mark past $1
@@ -51,7 +54,7 @@ wait_flush() {
   echo "changefeeds did not reach $t"; return 1
 }
 
-replay()   { c2s replicate -c "$CFG" --source files; }
+replay()   { share_extern; c2s replicate -c "$CFG" --source files; }
 validate() { c2s validate -c "$CFG" --as-of "$1"; }
 
 # one CDC round: mark stop point, wait for the changefeeds, replay all CDC files, validate
@@ -76,7 +79,9 @@ rm -rf .local/jobs/torture .local/jobs/torture-probes .local/dlq/torture .local/
 step "1. Create torture schema + seed data"
 must crdb_file tests/e2e/torture_schema.sql
 must crdb_file tests/e2e/torture_seed.sql
-crdb -d torture -e "SELECT table_name, estimated_row_count FROM crdb_internal.table_row_statistics ORDER BY 1" || true
+for t in customers '"Order"' order_items events audit_log readings type_zoo '"user"'; do
+  echo "  $t: $(crdb_q "SELECT count(*) FROM $t")"
+done
 
 step "2. Assess + convert + schema"
 must c2s dev init-emulator -c "$CFG"
@@ -91,7 +96,6 @@ want = {
     ("audit_log", "MONOTONIC_PK"), ("audit_log", "HASH_SHARDED"),
     ("readings", "HASH_SHARDED"), ("readings", "TYPE_INTERVAL"), ("readings", "TYPE_TIME"),
     ("type_zoo", "TYPE_INET"), ("type_zoo", "TYPE_BIT"),
-    ("wide_families", "COLUMN_FAMILIES"), ("places", "TYPE_GEOGRAPHY"),
 }
 missing = sorted(want - got)
 print("missing findings:", missing) if missing else print("all expected findings present")
@@ -102,6 +106,8 @@ must c2s schema apply -c "$CFG" --phase tables
 
 step "3. Snapshot (EXPORT AS OF T0) + bulk load"
 must c2s snapshot -c "$CFG"
+share_extern
+show_files .local/extern/torture/snapshot
 T0=$(python3 -c "import json; print(json.load(open('.local/jobs/torture/snapshot.json'))['t0'])")
 check "bulk load" c2s load -c "$CFG"
 check "validate after bulk load (as of T0)" validate "$T0"
@@ -118,7 +124,7 @@ done
 
 step "5.04 hot key: 200 sequential updates of one row"
 { echo "USE torture;"; for n in $(seq 1 200); do echo "UPDATE type_zoo SET emoji = 'v$n', big_dec = $n WHERE id = 1;"; done; } > "$OUT/04_hot_key.sql"
-check "04_hot_key: apply SQL" crdb_file "$OUT/04_hot_key.sql"
+check "04_hot_key: apply SQL" bash -c "docker compose exec -T cockroach ./cockroach sql --insecure < '$OUT/04_hot_key.sql' > /dev/null"
 cdc_round "04_hot_key"
 
 for f in 05_big_txn 06_cascade 07_edge_values; do
@@ -149,6 +155,7 @@ in_crdb "rm -f /cockroach/cockroach-data/extern/torture/cdc/type_zoo/zz-poison.n
 if [ -z "${SKIP_STREAMING:-}" ]; then
   step "9. Streaming apply (--follow, strict mode) killed and restarted mid-load"
   start_follow() { setsid crdb2spanner replicate -c "$CFG" --source files --follow >"$OUT/follow_$1.log" 2>&1 & echo $!; }
+  ( while true; do share_extern; sleep 3; done ) & SHARER=$!
   PID=$(start_follow 1)
   sleep 25
   check "09_streaming_load: apply SQL" crdb_file "$SCEN/09_streaming_load.sql"
@@ -163,6 +170,7 @@ if [ -z "${SKIP_STREAMING:-}" ]; then
     if validate "$STOP" >/dev/null 2>&1; then ok=0; break; fi
   done
   kill -- "-$PID" 2>/dev/null || true
+  kill "$SHARER" 2>/dev/null || true
   check "streaming kill/restart: converges (validate)" test "$ok" -eq 0
 else
   record SKIP "streaming kill/restart"
@@ -186,12 +194,17 @@ probe "probes: init target db" c2s dev init-emulator -c "$PROBE_CFG"
 probe "probes: assess" c2s assess -c "$PROBE_CFG"
 probe "probes: convert" c2s convert -c "$PROBE_CFG"
 probe "probes: schema apply" c2s schema apply -c "$PROBE_CFG" --phase tables
+probe "probes: assessment flags column families + geography" python3 -c "
+import json; got={(f['table'], f['rule']) for f in json.load(open('.local/jobs/torture-probes/assessment.json'))}
+want={('wide_families','COLUMN_FAMILIES'),('places','TYPE_GEOGRAPHY')}; print('missing:', sorted(want-got)); raise SystemExit(bool(want-got))"
 probe "probes: snapshot/EXPORT (geospatial)" c2s snapshot -c "$PROBE_CFG"
+share_extern
 probe "probes: bulk load" c2s load -c "$PROBE_CFG"
 probe "probes: changefeed create (column families)" c2s changefeed create -c "$PROBE_CFG"
 crdb -d torture -e "UPDATE wide_families SET b = 'changed' WHERE id < 50; UPDATE places SET name = 'moved' WHERE id < 10" || true
 PSTOP=$(hlc)
 probe "probes: changefeeds flushed" wait_flush "$PSTOP" "torture-probes/cdc"
+share_extern
 probe "probes: replicate" c2s replicate -c "$PROBE_CFG" --source files
 probe "probes: validate" c2s validate -c "$PROBE_CFG" --as-of "$PSTOP"
 

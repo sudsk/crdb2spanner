@@ -22,7 +22,7 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, read_path: str
     mapping_json = mapping.to_json()
     dlqs = []
     for table in tables:
-        pattern = f"{read_path.rstrip('/')}/{table}/*.parquet"
+        pattern = f"{read_path.rstrip('/')}/{table}/*.parquet"  # EXPORT writes export<id>-n<node>.<n>.parquet
         rows = p | f"Read[{table}]" >> beam.io.ReadFromParquet(pattern)
         ops = rows | f"ToOp[{table}]" >> beam.ParDo(RowToOp(mapping_json, table)).with_outputs(DLQ, main="ops")
         dlqs.append(ops[DLQ])
