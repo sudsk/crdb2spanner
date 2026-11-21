@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (92 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (95 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
 
 ## Why this exists
 
@@ -43,7 +43,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Streaming apply (`--follow`) killed and restarted mid-load | Passing |
 | Probes: geospatial | Fix pushed (changefeed GeoJSON converted to the EWKB that EXPORT writes), re-run pending |
 | Probes: column families | Known gap: CockroachDB requires `split_column_families`, which emits one partial event per family |
-| Multi-region (`scripts/e2e_multiregion.sh`) | Not yet run |
+| Multi-region (`scripts/e2e_multiregion.sh`): 3 regions, `REGIONAL BY ROW` / `GLOBAL` / `REGIONAL BY TABLE`, rows moving region | Passing |
 | Real Spanner + Dataflow | Not yet run |
 
 ## Implementation status
@@ -62,7 +62,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | CDC apply (Beam, Pub/Sub or files; LWW; strict/fast) | `pipelines/cdc_apply.py`, `pipelines/common/*` | Implemented, convergence-tested with shuffled and duplicated events |
 | Validation (counts + bucketed hashes) | `validate/compare.py` | Implemented (single process) |
 | Mutation-aware commits, commit delay/timeout, transaction tags | `pipelines/common/spanner_sink.py` | Implemented |
-| Multi-region sources (`REGIONAL BY ROW` region kept as a column) | `schema/converter.py`, `scripts/e2e_multiregion.sh` | Implemented, needs a live run |
+| Multi-region sources (`REGIONAL BY ROW` region kept as a column, region moves) | `schema/converter.py`, `scripts/e2e_multiregion.sh` | Implemented, passing in e2e |
 | Spanner client wire format: BYTES as base64 (decoded on read), `numeric` as exact text (any scale, NaN) | `schema/values.py` (`wire`, `from_wire`) | Implemented |
 | Pub/Sub admin, `count`, `truncate-target` | `control/pubsub_admin.py`, `spanner/data.py` | Implemented |
 | Identifier renames, database-wide names, sequences, `unique_rowid()` → sequence defaults, native `uuid`, expression / duplicate indexes, CHECK, TTL, natural-key overrides | `schema/converter.py` | Implemented, passing in e2e |
