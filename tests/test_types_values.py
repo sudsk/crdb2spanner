@@ -71,3 +71,28 @@ def test_inet_host_addresses_drop_full_length_mask():
     assert f("::1/128") == "::1"
     assert f("10.0.0.0/8") == "10.0.0.0/8" and f("2001:db8::/32") == "2001:db8::/32"
     assert get_transform("array:inet")(["1.2.3.4/32", None]) == ["1.2.3.4", None]
+
+
+def test_geospatial_changefeed_geojson_matches_export_ewkb():
+    from crdb2spanner.schema.types import map_type
+    from crdb2spanner.schema.values import get_transform, renders_as_text
+
+    geog, geom = map_type("GEOGRAPHY"), map_type("GEOMETRY")
+    assert geog.transform == "geo:4326" and geom.transform == "geo:0"
+    assert map_type("GEOMETRY(POINT,3857)").transform == "geo:3857"
+    assert renders_as_text(geog.transform) and not renders_as_text("int")
+    # values taken from CockroachDB: EXPORT / ::STRING give EWKB hex, the changefeed gives GeoJSON
+    point = "0101000020E6100000F2D24D621058B9BF0000000000C04940"
+    assert get_transform(geog.transform)({"type": "Point", "coordinates": [-0.099, 51.5]}) == point
+    assert get_transform(geog.transform)(point.lower()) == point
+    square = get_transform(geom.transform)('{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,1],[0,0]]]}')
+    assert square.startswith("01030000000100000005000000") and len(square) == 2 * (1 + 4 + 4 + 4 + 5 * 16)
+    multi = get_transform(geom.transform)({"type": "MultiPoint", "coordinates": [[1, 2], [3, 4]]})
+    assert multi.startswith("010400000002000000" + "0101000000")
+
+
+def test_snapshot_exports_geospatial_as_text():
+    from crdb2spanner.crdb.snapshot import select_expr
+
+    assert select_expr("loc", "geo:4326") == '"loc"::STRING AS "loc"'
+    assert select_expr("id", "int") == '"id"'

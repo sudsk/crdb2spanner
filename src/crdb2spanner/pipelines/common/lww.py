@@ -12,7 +12,7 @@ from apache_beam.coders import StrUtf8Coder
 from apache_beam.metrics import Metrics
 from apache_beam.transforms.userstate import ReadModifyWriteStateSpec
 
-from .envelope import HLC
+from .envelope import HLC, supersedes
 
 
 class LatestWinsDoFn(beam.DoFn):
@@ -24,11 +24,13 @@ class LatestWinsDoFn(beam.DoFn):
 
     def process(self, element, max_hlc=beam.DoFn.StateParam(MAX_HLC)):
         _, event = element
-        cur = max_hlc.read()
-        if cur is not None and HLC.parse(cur) >= event.hlc:
-            self.dropped.inc()
-            return
-        max_hlc.write(str(event.hlc))
+        cur = max_hlc.read()  # "<hlc>" or "<hlc>|d" when the newest change was a delete
+        if cur is not None:
+            hlc, _, d = cur.partition("|")
+            if not supersedes(event.hlc, event.is_delete, HLC.parse(hlc), d == "d"):
+                self.dropped.inc()
+                return
+        max_hlc.write(str(event.hlc) + ("|d" if event.is_delete else ""))
         self.passed.inc()
         yield event
     # TODO(M3): state-expiry timer so per-key state does not grow unbounded on huge tables.

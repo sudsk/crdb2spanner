@@ -28,8 +28,8 @@ Generated from `src/crdb2spanner/schema/types.py` (the code is the source of tru
 | `INET` | `varchar(64)` | `inet` | medium | INET stored as text; host addresses without `/32` or `/128` |
 | `BIT` | `varchar` | `to_text` | medium | BIT stored as text |
 | `VARBIT` | `varchar` | `to_text` | medium | VARBIT stored as text |
-| `GEOMETRY` | `varchar` | `to_text` | high | Geospatial stored as WKT/EWKB text |
-| `GEOGRAPHY` | `varchar` | `to_text` | high | Geospatial stored as WKT/EWKB text |
+| `GEOMETRY`, `GEOMETRY(type,SRID)` | `varchar` | `geo:SRID` | high | Stored as EWKB hex; changefeed GeoJSON converted to the same EWKB |
+| `GEOGRAPHY` | `varchar` | `geo:4326` | high | Stored as EWKB hex; changefeed GeoJSON converted to the same EWKB |
 | `TSVECTOR` | `varchar` | `to_text` | high | Use Spanner full-text search instead |
 | `OID` | `bigint` | `int` | medium |  |
 | `STRING[]` | `varchar[]` | `array:to_text` |  |  |

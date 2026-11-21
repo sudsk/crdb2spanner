@@ -28,7 +28,7 @@ from apache_beam.metrics import Metrics
 
 from ...schema.mapping import MappingSpec
 from ...schema.values import canonical, from_wire, wire
-from .envelope import HLC
+from .envelope import HLC, supersedes
 from .ops import DLQ, Op, dlq_record
 
 SHADOW_COLS = ["c2s_hlc_wall", "c2s_hlc_logical", "c2s_deleted"]
@@ -40,7 +40,8 @@ def dedupe(ops: Iterable[Op]) -> list[Op]:
     for op in ops:
         k = op.ident()
         cur = best.get(k)
-        if cur is None or op.hlc is None or (cur.hlc is not None and op.hlc > cur.hlc):
+        if cur is None or op.hlc is None or (cur.hlc is not None and supersedes(
+                op.hlc, op.kind == "delete", cur.hlc, cur.kind == "delete")):
             best[k] = op
     return list(best.values())
 
@@ -176,15 +177,16 @@ class SpannerApply(beam.DoFn):
             if not shadow_table:
                 winners.extend(tops)
                 continue
-            seen: dict[str, HLC] = {}
-            rs = txn.read(table=shadow_table, columns=pk_cols + SHADOW_COLS[:2],
+            seen: dict[str, tuple[HLC, bool]] = {}
+            rs = txn.read(table=shadow_table, columns=pk_cols + SHADOW_COLS,
                           keyset=self._spanner.KeySet(keys=[_wire_row(o.key) for o in tops]))
             for row in rs:
                 k = table + "|" + "|".join(canonical(from_wire(v)) for v in row[: len(pk_cols)])
-                seen[k] = HLC(int(row[-2]), int(row[-1]))
+                seen[k] = (HLC(int(row[-3]), int(row[-2])), bool(row[-1]))
             for op in tops:
                 prev = seen.get(op.ident())
-                if op.hlc is not None and prev is not None and op.hlc <= prev:
+                if op.hlc is not None and prev is not None and not supersedes(
+                        op.hlc, op.kind == "delete", prev[0], prev[1]):
                     self.skipped.inc()
                     continue
                 winners.append(op)

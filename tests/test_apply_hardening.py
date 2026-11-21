@@ -219,3 +219,19 @@ def test_validation_rounds_real_columns_to_float32_and_shows_column_diffs():
     norms = normalisers(tm)
     assert _normalise([1, 0.1], norms) == [1, _normalise([1, 0.10000000149011612], norms)[1]]
     assert "r: source=1.0 target=2.0" in _column_diff(tm, ["1", "1.0"], ["1", "2.0"])
+
+
+def test_region_move_same_hlc_upsert_beats_delete():
+    """REGIONAL BY ROW: moving a row's region deletes (old_region, id) and inserts (new_region, id)
+    at one HLC; both map to Spanner key (id,). The row must survive in any processing order."""
+    from crdb2spanner.pipelines.common.envelope import HLC, supersedes
+    from crdb2spanner.pipelines.common.spanner_sink import dedupe
+
+    t = HLC(10, 0)
+    assert supersedes(t, False, t, True) and not supersedes(t, True, t, False)
+    assert not supersedes(t, False, t, False) and not supersedes(t, True, t, True)  # replays are no-ops
+    assert supersedes(HLC(11, 0), True, t, False) and not supersedes(HLC(9, 0), False, t, True)
+    up = Op("accounts", "accounts", "upsert", ("a1",), {"id": "a1", "crdb_region": "asia-south1"}, t)
+    rm = Op("accounts", "accounts", "delete", ("a1",), None, t)
+    assert [o.kind for o in dedupe([up, rm])] == ["upsert"]
+    assert [o.kind for o in dedupe([rm, up])] == ["upsert"]

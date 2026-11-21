@@ -137,3 +137,18 @@ def parse_message(data: bytes | str, table: str | None = None, topic_prefix: str
     if before is not None and not isinstance(before, dict):
         before = None
     return ChangeEvent(tbl, tuple(key), after, HLC.parse(ts), before)
+
+
+def supersedes(hlc: "HLC", is_delete: bool, prev_hlc: "HLC | None", prev_deleted: bool) -> bool:
+    """Ordering rule for two changes to the same *target* row.
+
+    Newer HLC wins. At the same HLC an upsert beats a delete: one transaction deleted the old
+    source key and inserted the new one for the same Spanner row - e.g. a REGIONAL BY ROW row
+    moving region (crdb_region is part of the CockroachDB key but not of the Spanner key).
+    """
+    if prev_hlc is None:
+        return True
+    if hlc != prev_hlc:
+        return hlc > prev_hlc
+    return prev_deleted and not is_delete
+
