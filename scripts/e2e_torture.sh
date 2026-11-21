@@ -111,7 +111,8 @@ check "convert: _id renamed to id_"            grep -q 'id_ varchar NOT NULL' $D
 check "convert: bit-reversed sequence created" grep -q 'CREATE SEQUENCE job_execution_seq BIT_REVERSED_POSITIVE' $D/ddl_tables.sql
 check "convert: expression index -> generated column" grep -q 'GENERATED ALWAYS AS (lower(sender_email)) STORED' $D/ddl_tables.sql
 check "convert: natural key override"          grep -q 'PRIMARY KEY (job_execution_id, key_name)' $D/ddl_tables.sql
-check "convert: duplicate index skipped"       bash -c "! grep -q job_status_dup_idx $D/ddl_indexes.sql"
+# job_status_idx and job_status_dup_idx are identical; exactly one survives (catalog order decides which)
+check "convert: duplicate index skipped"       bash -c "[ \$(grep -cE 'job_status_(dup_)?idx' $D/ddl_indexes.sql) -eq 1 ]"
 check "convert: TTL policy generated"          grep -q 'ADD TTL INTERVAL' $D/ddl_post.sql
 must c2s schema apply -c "$CFG" --phase tables
 

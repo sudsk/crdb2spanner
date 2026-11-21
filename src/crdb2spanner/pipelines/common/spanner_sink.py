@@ -17,6 +17,7 @@ instead of failing its neighbours.
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import json
 import os
@@ -71,15 +72,33 @@ def chunk_by_mutations(ops: list[Op], weights: dict[str, int], strict: bool, max
     return chunks
 
 
+def wire(v):
+    """Encode a value for the Spanner client.
+
+    The Python client sends BYTES as base64 text and only accepts ``bytes`` that are
+    already base64-encoded, so raw bytes (from CDC or Parquet) are encoded here, at
+    the edge. Ops keep raw bytes so dedupe/validation compare like with like.
+    """
+    if isinstance(v, (bytes, bytearray, memoryview)):
+        return base64.b64encode(bytes(v))
+    if isinstance(v, (list, tuple)):
+        return [wire(x) for x in v]
+    return v
+
+
+def _wire_row(values) -> list:
+    return [wire(v) for v in values]
+
+
 def _group_mutations(ops: list[Op]):
     upserts: dict[tuple[str, tuple[str, ...]], list[list]] = defaultdict(list)
     deletes: dict[str, list[list]] = defaultdict(list)
     for op in ops:
         if op.kind == "delete":
-            deletes[op.target_table].append(list(op.key))
+            deletes[op.target_table].append(_wire_row(op.key))
         else:
             cols = tuple(op.row.keys())
-            upserts[(op.target_table, cols)].append([op.row[c] for c in cols])
+            upserts[(op.target_table, cols)].append(_wire_row(op.row[c] for c in cols))
     return upserts, deletes
 
 
@@ -174,7 +193,7 @@ class SpannerApply(beam.DoFn):
                 continue
             seen: dict[str, HLC] = {}
             rs = txn.read(table=shadow_table, columns=pk_cols + SHADOW_COLS[:2],
-                          keyset=self._spanner.KeySet(keys=[list(o.key) for o in tops]))
+                          keyset=self._spanner.KeySet(keys=[_wire_row(o.key) for o in tops]))
             for row in rs:
                 k = table + "|" + "|".join(canonical(v) for v in row[: len(pk_cols)])
                 seen[k] = HLC(int(row[-2]), int(row[-1]))
@@ -186,7 +205,7 @@ class SpannerApply(beam.DoFn):
                 winners.append(op)
                 if op.hlc is not None:
                     shadow_rows[shadow_table].append(
-                        list(op.key) + [op.hlc.wall, op.hlc.logical, op.kind == "delete"])
+                        _wire_row(op.key) + [op.hlc.wall, op.hlc.logical, op.kind == "delete"])
 
         upserts, deletes = _group_mutations(winners)
         for (table, cols), values in upserts.items():
