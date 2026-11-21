@@ -88,7 +88,8 @@ class SkipUnreadable(beam.DoFn):
 
 def _latest(events):
     events = list(events)
-    return max(events, key=lambda e: e.hlc) if events else None
+    # same HLC: an upsert beats a delete (see envelope.supersedes)
+    return max(events, key=lambda e: (e.hlc, not e.is_delete)) if events else None
 
 
 def _read_files_table(p, base: str, table: str, follow: bool, interval_s: int, paths: list[str] | None = None):
