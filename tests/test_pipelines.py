@@ -208,3 +208,25 @@ def test_unreadable_cdc_files_are_skipped_not_fatal(job, monkeypatch):
         assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", "u1")): "ok"}
     finally:
         locked.chmod(0o644)
+
+
+def test_local_follow_polls_and_applies_new_files(job, monkeypatch):
+    cfg, mapping, tmp = job
+    U1, U2 = "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"
+    monkeypatch.setattr(cdc_apply, "SpannerApply", FakeSpannerApply)
+    STORE.clear()
+    d = tmp / "cdc" / "users" / "2026-11-21"
+    d.mkdir(parents=True)
+    (d / "a-users-1.ndjson").write_text(_line(["rome", U1], {"id": U1, "city": "rome", "name": "v1"}, HLC(5)) + "\n")
+
+    def sleep(_):  # a new file lands between rounds: newer version of u1 and a new row u2
+        f = d / "b-users-1.ndjson"
+        if not f.exists():
+            f.write_text(_line(["rome", U1], {"id": U1, "city": "rome", "name": "v2"}, HLC(6)) + "\n"
+                         + _line(["rome", U2], {"id": U2, "city": "rome", "name": "new"}, HLC(7)) + "\n")
+
+    monkeypatch.setattr("time.sleep", sleep)
+    monkeypatch.delenv("C2S_LOCAL_RUNNER", raising=False)
+    assert cdc_apply._local_runner([]) and not cdc_apply._local_runner(["--runner", "DataflowRunner"])
+    cdc_apply.follow_locally(cfg, mapping, ["users"], [], settle_s=0, max_rounds=3)
+    assert {k: v["name"] for k, v in STORE.items()} == {("users", ("rome", U1)): "v2", ("users", ("rome", U2)): "new"}
