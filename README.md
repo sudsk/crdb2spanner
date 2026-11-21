@@ -37,9 +37,11 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Step | State |
 |---|---|
 | Seed, assessment (all expected findings), convert checks, schema apply on the emulator (uuid, bit-reversed sequences, generated columns) | Passing |
-| Bulk load + validation as of T0 | 9 of 11 tables exact. BYTES fixed; fixes pushed for high-scale/NaN `numeric` and `real` (float32) comparison, re-run pending |
-| CDC replicate (`01_dml_mix`) | Replicate passes. Validation affected by the BYTES fix above |
-| CDC scenarios 02–10 (PK updates, deletes, reordering, poison messages, schema change stop, real-world patterns) | In progress |
+| Bulk load + validation as of T0 | Passing, all 11 tables exact |
+| CDC scenarios 01–10, duplicate replay, pause/resume, poison message → DLQ, schema change stops the changefeed | Replicate passes everywhere. Validation exact on 10 of 11 tables. Fix pushed for `INET` text form (`type_zoo`), re-run pending |
+| Streaming apply killed and restarted mid-load | Blocked by the `INET` fix above, re-run pending |
+| Post-cutover FKs + CHECK constraints | Fix pushed (CockroachDB type names in CHECK expressions), re-run pending |
+| Probes: column families, geospatial | Known gaps, recorded: column families need `split_column_families`; geography arrives as GeoJSON via CDC vs EWKB via EXPORT |
 | Multi-region (`scripts/e2e_multiregion.sh`) | Not yet run |
 | Real Spanner + Dataflow | Not yet run |
 

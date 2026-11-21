@@ -128,6 +128,19 @@ def _to_uuid(v):
     return str(_uuid.UUID(str(v)))
 
 
+def _to_inet(s: str) -> str:
+    """Canonical INET text: a host address has no mask (``10.0.0.1/32`` -> ``10.0.0.1``).
+
+    CockroachDB renders the same INET value with or without the full-length mask depending
+    on how it was written and on the output path (``::STRING``/EXPORT vs changefeed JSON).
+    """
+    if s.endswith("/32") and ":" not in s:
+        return s[:-3]
+    if s.endswith("/128") and ":" in s:
+        return s[:-4]
+    return s
+
+
 def _to_text(v):
     if isinstance(v, (bytes, bytearray)):
         return v.decode("utf-8", errors="replace")
@@ -159,8 +172,13 @@ _SCALARS: dict[str, Callable[[Any], Any]] = {
     "json": _to_json,
     "uuid": _to_uuid,
     "to_text": _to_text,
+    "inet": lambda v: _to_inet(_to_text(v)),
     "bit_reverse": bit_reverse_64,
 }
+
+
+# transforms whose source value is rendered as text by CockroachDB (EXPORT, validation)
+TEXT_TRANSFORMS = ("to_text", "inet")
 
 
 def get_transform(name: str) -> Callable[[Any], Any]:

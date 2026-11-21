@@ -59,3 +59,15 @@ def test_canonical_normalises_equivalent_values():
     j2 = get_transform("json")('{"a":2,"b":1}')
     assert canonical(j1) == canonical(j2)
     assert canonical(None) != canonical("")
+
+
+def test_inet_host_addresses_drop_full_length_mask():
+    from crdb2spanner.schema.types import map_type
+    from crdb2spanner.schema.values import get_transform
+
+    t = map_type("INET")
+    f = get_transform(t.transform)
+    assert f("10.0.131.1/32") == f("10.0.131.1") == "10.0.131.1"
+    assert f("::1/128") == "::1"
+    assert f("10.0.0.0/8") == "10.0.0.0/8" and f("2001:db8::/32") == "2001:db8::/32"
+    assert get_transform("array:inet")(["1.2.3.4/32", None]) == ["1.2.3.4", None]

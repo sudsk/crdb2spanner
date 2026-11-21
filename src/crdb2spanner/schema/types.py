@@ -71,7 +71,7 @@ _SCALAR: dict[str, TypeMapping] = {
     "TIME": TypeMapping("varchar(32)", "to_text", "medium", "TIME stored as ISO text"),
     "TIMETZ": TypeMapping("varchar(40)", "to_text", "medium", "TIMETZ stored as ISO text"),
     "INTERVAL": TypeMapping("varchar(64)", "to_text", "medium", "INTERVAL stored as text"),
-    "INET": TypeMapping("varchar(64)", "to_text", "medium", "INET stored as text"),
+    "INET": TypeMapping("varchar(64)", "inet", "medium", "INET stored as text (host addresses without /32 or /128)"),
     "BIT": TypeMapping("varchar", "to_text", "medium", "BIT stored as text"),
     "VARBIT": TypeMapping("varchar", "to_text", "medium", "VARBIT stored as text"),
     "GEOMETRY": TypeMapping("varchar", "to_text", "high", "Geospatial stored as WKT/EWKB text"),

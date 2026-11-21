@@ -201,3 +201,12 @@ def test_wave_renders_one_config_per_database(tmp_path):
     with pytest.raises(ValueError):
         (tmp_path / "bad.yaml").write_text("job_id: x\n")
         render_configs(tmp_path / "bad.yaml", ["a"], tmp_path / "o2")
+
+
+def test_check_expressions_use_postgres_type_names():
+    from crdb2spanner.schema.converter import strip_casts
+
+    assert strip_casts("status IN ('A':::STRING, 'B':::STRING)") == "status IN ('A', 'B')"
+    assert strip_casts("status::STRING = 'x'") == "status::text = 'x'"
+    assert strip_casts("(qty::INT8 > 0) AND (x::FLOAT8[] IS NULL)") == "(qty::bigint > 0) AND (x::double precision[] IS NULL)"
+    assert strip_casts("ts::TIMESTAMPTZ") == "ts::timestamptz"

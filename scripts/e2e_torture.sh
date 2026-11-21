@@ -196,11 +196,17 @@ if [ -z "${SKIP_STREAMING:-}" ]; then
   ok=1
   for _ in $(seq 1 12); do
     sleep 15
-    if validate "$STOP" >/dev/null 2>&1; then ok=0; break; fi
+    if validate "$STOP" >"$OUT/follow_validate.log" 2>&1; then ok=0; break; fi
   done
   kill -- "-$PID" 2>/dev/null || true
   kill "$SHARER" 2>/dev/null || true
   check "streaming kill/restart: converges (validate)" test "$ok" -eq 0
+  if [ "$ok" -ne 0 ]; then
+    echo "  last validation:"; grep -E "FAIL|different|missing|extra" "$OUT/follow_validate.log" | head -15
+    for f in "$OUT"/follow_1.log "$OUT"/follow_2.log; do
+      echo "  tail $f:"; grep -vE "skipping unreadable" "$f" | tail -8
+    done
+  fi
 else
   record SKIP "streaming kill/restart"
 fi
