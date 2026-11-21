@@ -106,13 +106,13 @@ print("missing findings:", missing) if missing else print("all expected findings
 sys.exit(1 if missing else 0)
 EOF
 must c2s convert -c "$CFG"
-check "convert: _id renamed, sequences + expression column generated" bash -c "
-  grep -q 'id_ varchar NOT NULL' .local/jobs/torture/ddl_tables.sql &&
-  grep -q 'CREATE SEQUENCE job_execution_seq BIT_REVERSED_POSITIVE' .local/jobs/torture/ddl_tables.sql &&
-  grep -q 'GENERATED ALWAYS AS (lower(sender_email)) STORED' .local/jobs/torture/ddl_tables.sql &&
-  grep -q 'PRIMARY KEY (job_execution_id, key_name)' .local/jobs/torture/ddl_tables.sql &&
-  ! grep -q job_status_dup_idx .local/jobs/torture/ddl_indexes.sql &&
-  grep -q 'ADD TTL INTERVAL' .local/jobs/torture/ddl_post.sql"
+D=.local/jobs/torture
+check "convert: _id renamed to id_"            grep -q 'id_ varchar NOT NULL' $D/ddl_tables.sql
+check "convert: bit-reversed sequence created" grep -q 'CREATE SEQUENCE job_execution_seq BIT_REVERSED_POSITIVE' $D/ddl_tables.sql
+check "convert: expression index -> generated column" grep -q 'GENERATED ALWAYS AS (lower(sender_email)) STORED' $D/ddl_tables.sql
+check "convert: natural key override"          grep -q 'PRIMARY KEY (job_execution_id, key_name)' $D/ddl_tables.sql
+check "convert: duplicate index skipped"       bash -c "! grep -q job_status_dup_idx $D/ddl_indexes.sql"
+check "convert: TTL policy generated"          grep -q 'ADD TTL INTERVAL' $D/ddl_post.sql
 must c2s schema apply -c "$CFG" --phase tables
 
 step "3. Snapshot (EXPORT AS OF T0) + bulk load"
