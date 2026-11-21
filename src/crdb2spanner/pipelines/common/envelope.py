@@ -6,6 +6,8 @@ Handles the shapes emitted by the Pub/Sub and cloud-storage sinks:
          Pub/Sub may wrap it: {"key": [...], "value": {"after": ...}, "topic": "t"}
          (field names are matched case-insensitively)
   resolved  {"resolved": "<hlc>"}
+  enriched  {"after": ..., "op": "c|u|d|r", "source": {"ts_hlc": "<hlc>", ...}, "ts_ns": ...}
+            (CockroachDB v25.2+ envelope=enriched; op "d" is a delete)
 
 HLC timestamps are decimal strings ``<wall nanos>.<10-digit logical>``.
 """
@@ -119,9 +121,15 @@ def parse_message(data: bytes | str, table: str | None = None, topic_prefix: str
         crdb = _ci(body, "crdb") or {}
         ts = _ci(crdb, "updated") or _ci(crdb, "mvcc_timestamp")
     if ts is None:
+        source = _ci(body, "source") or {}
+        if isinstance(source, dict):
+            ts = _ci(source, "ts_hlc")
+    if ts is None:
         raise EnvelopeError("message has no updated/mvcc_timestamp (create changefeed WITH updated)")
 
     after = _ci(body, "after")
+    if str(_ci(body, "op") or "").lower() == "d":
+        after = None
     if after is not None and not isinstance(after, dict):
         raise EnvelopeError("'after' is not an object")
     return ChangeEvent(tbl, tuple(key), after, HLC.parse(ts))

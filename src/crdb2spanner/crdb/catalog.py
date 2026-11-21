@@ -58,6 +58,9 @@ class Table:
     checks: list[str] = field(default_factory=list)
     create_statement: str = ""
     estimated_rows: int | None = None
+    # implicit leading PK columns (e.g. crdb_region on REGIONAL BY ROW tables); not part of
+    # SHOW INDEXES' explicit key but present in changefeed keys and the physical key
+    implicit_key: list[str] = field(default_factory=list)
 
     def column(self, name: str) -> Column:
         for c in self.columns:
@@ -105,6 +108,7 @@ class Catalog:
                     checks=t.get("checks", []),
                     create_statement=t.get("create_statement", ""),
                     estimated_rows=t.get("estimated_rows"),
+                    implicit_key=t.get("implicit_key", []),
                 )
             )
         return cls(
@@ -240,11 +244,17 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
     cur.execute(f'SHOW INDEXES FROM "{schema}"."{name}"')
     cols = [d.name for d in cur.description]
     idx: dict[str, Index] = {}
+    implicit_key: list[str] = []
     for row in cur.fetchall():
         r = dict(zip(cols, row))
-        if r.get("implicit"):
-            continue
         iname = r["index_name"]
+        if r.get("implicit"):
+            # implicit columns of the primary index are partitioning prefixes (crdb_region);
+            # implicit columns of secondary indexes are the PK suffix - ignore those
+            if (iname.endswith("_pkey") or iname == "primary") and not r.get("storing") \
+                    and r["column_name"] not in implicit_key:
+                implicit_key.append(r["column_name"])
+            continue
         i = idx.setdefault(
             iname,
             Index(name=iname, columns=[], unique=not r["non_unique"],
@@ -299,4 +309,5 @@ def _introspect_table(cur, schema: str, name: str) -> Table:
         name=name, columns=columns, primary_key=pk,
         indexes=[i for i in idx.values() if not i.primary],
         foreign_keys=fks, checks=checks, create_statement=create_stmt, estimated_rows=est,
+        implicit_key=implicit_key,
     )

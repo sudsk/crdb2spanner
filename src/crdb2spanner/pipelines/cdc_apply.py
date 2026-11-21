@@ -134,14 +134,40 @@ def build(p: beam.Pipeline, cfg: JobConfig, mapping: MappingSpec, tables: list[s
                                         cfg.apply.max_batch_latency_s if streaming else None)
         | "Apply" >> beam.ParDo(SpannerApply(
             cfg.target.project, cfg.target.instance, cfg.target.database, mapping_json,
-            mode=cfg.apply.mode, emulator_host=cfg.target.emulator_host)).with_outputs(DLQ, main="ok")
+            mode=cfg.apply.mode, emulator_host=cfg.target.emulator_host,
+                max_commit_delay_ms=cfg.apply.max_commit_delay_ms, commit_timeout_s=cfg.apply.commit_timeout_s,
+                max_mutations=cfg.apply.max_mutations_per_commit,
+                transaction_tag=f"c2s-{cfg.job_id}")).with_outputs(DLQ, main="ok")
     )
     dlqs.append(written[DLQ])
     _ = dlqs | "FlattenDlq" >> beam.Flatten() | "Dlq" >> WriteDlq(cfg.apply, "cdc", streaming)
 
 
+def count_cdc_files(base: str, tables: list[str]) -> dict[str, int]:
+    """Number of changefeed files visible to the pipeline, per table (files source)."""
+    from apache_beam.io.filesystems import FileSystems
+
+    out = {}
+    for t in tables:
+        root = f"{base.rstrip('/')}/{t}"
+        pats = [f"{root}/*", f"{root}/*/*"]
+        res = FileSystems.match(pats)
+        out[t] = sum(1 for r in res for m in r.metadata_list
+                     if m.path.endswith((".ndjson", ".json", ".RESOLVED")))
+    return out
+
+
 def run(cfg: JobConfig, mapping: MappingSpec, tables: list[str], beam_args: list[str], *,
         source: str, follow: bool = False):
+    if source == "files" and not follow:
+        counts = count_cdc_files(cfg.cdc.files_read_path, tables)
+        log.info("CDC files per table: %s", counts)
+        print("CDC files per table: " + ", ".join(f"{t}={n}" for t, n in counts.items()))
+        if sum(counts.values()) == 0:
+            raise RuntimeError(
+                f"no changefeed files found under {cfg.cdc.files_read_path} - check the changefeeds are "
+                "running and that this user can read the directory (files written by a container may be "
+                "root-only)")
     opts = PipelineOptions(beam_args, save_main_session=False)
     streaming = source == "pubsub" or follow
     if streaming:

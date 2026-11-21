@@ -1,7 +1,7 @@
 -- 07 edge values arriving through CDC (not only through the bulk load)
 USE torture;
 INSERT INTO type_zoo (id, big_dec, ip, bits, vbits, arr_int, arr_text, doc, bin, big_text, emoji) VALUES
-  (500, 'NaN', '255.255.255.255/32', B'00000000', B'', ARRAY[NULL]::INT8[], ARRAY[NULL, 'z'], '{"deep": [[[[1]]]]}',
+  (5000, 'NaN', '255.255.255.255/32', B'00000000', B'', ARRAY[NULL]::INT8[], ARRAY[NULL, 'z'], '{"deep": [[[[1]]]]}',
    decode('00000000', 'hex'), repeat('y', 300000), '🧪 ∑ ¿');
 UPDATE type_zoo SET arr_int = ARRAY[]::INT8[], doc = '[]' WHERE id = 1;
 UPDATE type_zoo SET big_dec = -99999999999999999999.99999999999999999999 WHERE id = 2;

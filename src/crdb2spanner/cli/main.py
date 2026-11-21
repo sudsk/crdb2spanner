@@ -24,9 +24,11 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="CockroachDB 
 cf_app = typer.Typer(no_args_is_help=True, help="Manage CockroachDB changefeeds")
 schema_app = typer.Typer(no_args_is_help=True, help="Apply Spanner DDL")
 dev_app = typer.Typer(no_args_is_help=True, help="Local test-environment helpers")
+pubsub_app = typer.Typer(no_args_is_help=True, help="Pub/Sub topics and subscriptions for CDC")
 app.add_typer(cf_app, name="changefeed")
 app.add_typer(schema_app, name="schema")
 app.add_typer(dev_app, name="dev")
+app.add_typer(pubsub_app, name="pubsub")
 
 ConfigOpt = typer.Option(..., "--config", "-c", help="job YAML", exists=True, dir_okay=False)
 BEAM_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
@@ -258,6 +260,104 @@ def status(config: Path = ConfigOpt):
     for t, j in st.changefeeds.items():
         typer.echo(f"  changefeed {t}: {j}")
     typer.echo(f"  artefacts: {jd}")
+
+
+@pubsub_app.command("create")
+def pubsub_create(config: Path = ConfigOpt, table: Optional[list[str]] = typer.Option(None, "--table", "-t")):
+    """Create one topic + subscription per table (existing ones are reused)."""
+    from ..control import pubsub_admin
+
+    cfg, jd, st = _ctx(config)
+    _require_pubsub(cfg)
+    failures = pubsub_admin.create(cfg.cdc, _tables(cfg, _mapping(jd), table), log=typer.echo)
+    if failures:
+        raise typer.Exit(1)
+
+
+@pubsub_app.command("delete")
+def pubsub_delete(config: Path = ConfigOpt, table: Optional[list[str]] = typer.Option(None, "--table", "-t"),
+                  yes: bool = typer.Option(False, "--yes", help="actually delete (default: dry run)")):
+    """Delete each table's subscription then topic. Dry run unless --yes."""
+    from ..control import pubsub_admin
+
+    cfg, jd, st = _ctx(config)
+    _require_pubsub(cfg)
+    tables = _tables(cfg, _mapping(jd), table)
+    if not yes:
+        for t in tables:
+            typer.echo("would delete: " + "  ".join(pubsub_admin.names(cfg.cdc, t)))
+        typer.echo("dry run - pass --yes to delete")
+        return
+    if pubsub_admin.delete(cfg.cdc, tables, log=typer.echo):
+        raise typer.Exit(1)
+
+
+@pubsub_app.command("list")
+def pubsub_list(config: Path = ConfigOpt):
+    """List this job's topics and their subscriptions."""
+    from ..control import pubsub_admin
+
+    cfg, jd, st = _ctx(config)
+    _require_pubsub(cfg)
+    pubsub_admin.list_all(cfg.cdc, log=typer.echo)
+
+
+def _require_pubsub(cfg: JobConfig) -> None:
+    if not cfg.cdc.pubsub_project:
+        raise typer.BadParameter("cdc.pubsub_project is not set in the job config")
+
+
+@app.command()
+def count(config: Path = ConfigOpt, table: Optional[list[str]] = typer.Option(None, "--table", "-t"),
+          estimate: bool = typer.Option(False, help="source: use table statistics instead of count(*)")):
+    """Row counts per table: source vs target (quick check; `validate` compares contents)."""
+    from ..crdb import connect
+    from ..spanner.data import count_rows
+
+    cfg, jd, st = _ctx(config)
+    mapping = _mapping(jd)
+    tables = _tables(cfg, mapping, table)
+    src: dict[str, object] = {}
+    with connect(cfg.source.resolve_dsn()) as conn:
+        cur = conn.cursor()
+        for t in tables:
+            try:
+                if estimate:
+                    cur.execute("SELECT estimated_row_count FROM crdb_internal.table_row_statistics "
+                                "WHERE table_name = %s", (t,))
+                    row = cur.fetchone()
+                    src[t] = row[0] if row else "no stats"
+                else:
+                    cur.execute(f'SELECT count(*) FROM "{cfg.source.schema}"."{t}"')
+                    src[t] = cur.fetchone()[0]
+            except Exception as e:  # noqa: BLE001
+                src[t] = f"error: {e}"
+    tgt = count_rows(cfg.target, [mapping.table(t).target for t in tables])
+    typer.echo(f"{'table':<30} {'source':>12} {'target':>12} {'diff':>10}")
+    for t in tables:
+        s, g = src[t], tgt[mapping.table(t).target]
+        diff = (s - g) if isinstance(s, int) and isinstance(g, int) else ""
+        typer.echo(f"{t:<30} {s!s:>12} {g!s:>12} {diff!s:>10}")
+
+
+@app.command("truncate-target")
+def truncate_target(config: Path = ConfigOpt, table: Optional[list[str]] = typer.Option(None, "--table", "-t"),
+                    yes: bool = typer.Option(False, "--yes", help="required: confirms deleting target rows")):
+    """Empty target tables (and their shadow tables) with partitioned DML - for re-running a test."""
+    from ..spanner.data import truncate
+
+    cfg, jd, st = _ctx(config)
+    mapping = _mapping(jd)
+    names = []
+    for t in _tables(cfg, mapping, table):
+        tm = mapping.table(t)
+        names.append(tm.target)
+        if tm.shadow_table:
+            names.append(tm.shadow_table)
+    if not yes:
+        typer.echo("would empty: " + ", ".join(names) + "\ndry run - pass --yes to delete")
+        return
+    truncate(cfg.target, names, log=typer.echo)
 
 
 @dev_app.command("init-emulator")

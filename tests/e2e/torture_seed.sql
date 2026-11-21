@@ -83,6 +83,6 @@ SELECT i, 'a' || i::STRING, 'b' || i::STRING, i FROM generate_series(1, 200) AS 
 
 INSERT INTO places (id, name, loc, shape)
 SELECT i, 'place ' || i::STRING,
-       ST_MakePoint(-0.1 + i * 0.001, 51.5)::GEOGRAPHY,
+       ST_MakePoint((-0.1 + i * 0.001)::FLOAT8, 51.5::FLOAT8)::GEOGRAPHY,
        'POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))'::GEOMETRY
 FROM generate_series(1, 100) AS g(i);
