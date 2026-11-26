@@ -50,10 +50,26 @@ fi
 step "Dataflow worker service account $WORKER_SA"
 g iam service-accounts describe "$WORKER_SA" >/dev/null 2>&1 ||
   g iam service-accounts create "$WORKER_SA_NAME" --display-name "crdb2spanner Dataflow workers"
-for role in roles/dataflow.worker roles/spanner.databaseUser roles/pubsub.subscriber roles/pubsub.viewer; do
+for role in roles/dataflow.worker roles/pubsub.subscriber roles/pubsub.viewer; do
   retry g projects add-iam-policy-binding "$GCP_PROJECT" --member "serviceAccount:$WORKER_SA" --role "$role" \
     --condition None >/dev/null
 done
+# Spanner access for the workers. roles/spanner.databaseUser also allows DDL; the workers only read and
+# write rows (the operator applies the schema), so WORKER_SPANNER_ROLE=dml binds a DML-only custom role.
+if [ "${WORKER_SPANNER_ROLE:-databaseUser}" = "dml" ]; then
+  DML_ROLE=projects/$GCP_PROJECT/roles/c2sSpannerDml
+  g iam roles describe c2sSpannerDml --project "$GCP_PROJECT" >/dev/null 2>&1 ||
+    g iam roles create c2sSpannerDml --project "$GCP_PROJECT" --title "crdb2spanner Spanner DML (no DDL)" \
+      --permissions spanner.databases.beginOrRollbackReadWriteTransaction,spanner.databases.beginReadOnlyTransaction,spanner.databases.read,spanner.databases.select,spanner.databases.write,spanner.databases.get,spanner.sessions.create,spanner.sessions.delete,spanner.sessions.get,spanner.sessions.list,spanner.instances.get
+  retry g spanner instances add-iam-policy-binding "$SPANNER_INSTANCE" --member "serviceAccount:$WORKER_SA" \
+    --role "$DML_ROLE" >/dev/null
+else
+  retry g spanner instances add-iam-policy-binding "$SPANNER_INSTANCE" --member "serviceAccount:$WORKER_SA" \
+    --role roles/spanner.databaseUser >/dev/null
+fi
+# a pre-built worker image (templates/Dockerfile.worker) in Artifact Registry needs read access
+retry g projects add-iam-policy-binding "$GCP_PROJECT" --member "serviceAccount:$WORKER_SA" \
+  --role roles/artifactregistry.reader --condition None >/dev/null
 retry g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$WORKER_SA" \
   --role roles/storage.objectAdmin >/dev/null
 

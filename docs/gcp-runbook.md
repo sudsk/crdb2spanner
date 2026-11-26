@@ -86,10 +86,75 @@ crdb2spanner schema apply -c $CFG --phase post        # FKs, CHECK constraints, 
 crdb2spanner changefeed cancel -c $CFG
 ```
 
-When you submit to Dataflow from a source checkout, the tool builds a wheel of the checkout and adds
-`--extra_package` so the workers have the code. Passing your own `--extra_package`, `--setup_file` or
-`--sdk_container_image` turns this off. For production, build the Flex Template image instead
-(`templates/Dockerfile`).
+How the workers get the code: with `C2S_WORKER_IMAGE` set, they run on that pre-built image
+(see [Workers without PyPI access](#workers-without-pypi-access-pre-built-image)). Otherwise, when you
+submit from a source checkout, the tool builds a wheel of the checkout and adds `--extra_package`, and
+the workers install its dependencies from PyPI at startup. Passing your own `--extra_package`,
+`--setup_file` or `--sdk_container_image` turns both off.
+
+## Workers without PyPI access: pre-built image
+
+In projects where Dataflow workers have no external IP and no Cloud NAT, workers can't install
+packages at startup. Build an image that already contains the tool and every dependency, once per
+tool version:
+
+```bash
+export GCP_PROJECT=my-project REGION=europe-west2
+./scripts/build_worker_image.sh          # Cloud Build -> Artifact Registry repo "c2s"; LOCAL_DOCKER=1 to use docker
+export C2S_WORKER_IMAGE=<printed image URI>
+crdb2spanner load -c $CFG -- $DF --subnetwork <url> --no_use_public_ips --job_name c2s-load
+```
+
+- The image is built for the Python and Apache Beam versions of the environment that runs the
+  script; submit the jobs from that same environment (Dataflow requires matching versions).
+- With `C2S_WORKER_IMAGE` set, the tool adds `--sdk_container_image <image> --sdk_location container`
+  to every Dataflow job; nothing is staged for the workers to install.
+- The worker service account needs `roles/artifactregistry.reader` (`gcp_setup.sh` grants it).
+- Building needs the Cloud Build and Artifact Registry APIs (the script enables them). Organisations
+  that restrict Cloud Build's default service account may need `gcloud builds submit
+  --service-account ...`, or `LOCAL_DOCKER=1` from a machine with docker.
+
+## Source CockroachDB user (least privilege)
+
+The tool only reads the source. It never creates tables, temp tables or schema objects there, so
+the migration user needs no `CREATE` privilege:
+
+```sql
+CREATE USER migrator WITH PASSWORD '...';                        -- or certificate auth
+GRANT CONNECT ON DATABASE app_db TO migrator;
+USE app_db;
+GRANT USAGE ON SCHEMA public TO migrator;
+GRANT SELECT ON TABLE public.* TO migrator;                      -- assess, EXPORT, validate
+GRANT SELECT ON SEQUENCE public.* TO migrator;                   -- current values for SKIP RANGE
+GRANT CHANGEFEED ON TABLE public.* TO migrator;                  -- CREATE CHANGEFEED
+GRANT SYSTEM EXTERNALIOIMPLICITACCESS TO migrator;               -- gs://...?AUTH=implicit (EXPORT, changefeeds)
+GRANT SYSTEM VIEWCLUSTERSETTING TO migrator;                     -- optional: lets assess read kv.rangefeed.enabled
+```
+
+An admin also has to enable rangefeeds once: `SET CLUSTER SETTING kv.rangefeed.enabled = true;`.
+With `AUTH=specified` (a service account key in `cdc.sink_credentials_b64`), `EXTERNALIOIMPLICITACCESS`
+is not needed. The user can cancel its own changefeeds; `CONTROLJOB` is only needed to manage
+changefeeds created by someone else.
+
+## Network paths
+
+Data flows from CockroachDB to Cloud Storage and from Cloud Storage to Spanner. Dataflow never
+connects to CockroachDB, so there is no inbound path from Google Cloud to the source database.
+
+| From | To | Port | Why |
+|---|---|---|---|
+| CockroachDB nodes | `storage.googleapis.com` | 443 | `EXPORT` snapshot files and changefeed files |
+| Operator machine (VM, Cloud Shell, CI) | CockroachDB SQL endpoint | 26257 | `assess`, `snapshot`, `changefeed create`, `validate` |
+| Operator machine | Google APIs (Spanner, Dataflow, Storage) | 443 | schema apply, job submission, `validate` |
+| Dataflow workers | Google APIs (Storage, Pub/Sub, Spanner, Artifact Registry) | 443 | through Private Google Access when workers have no external IP |
+| Dataflow workers | Dataflow workers | 12345-12346 | worker-to-worker traffic (needed by every Dataflow job) |
+
+## Spanner roles
+
+| Principal | Role | Why |
+|---|---|---|
+| Operator | `roles/spanner.databaseAdmin` on the instance | creates the database, applies the DDL phases, runs `validate` |
+| Dataflow worker service account | `roles/spanner.databaseUser` on the instance (default), or the DML-only custom role `c2sSpannerDml` (`WORKER_SPANNER_ROLE=dml ./scripts/gcp_setup.sh`) | reads and writes rows, including the strict-mode shadow tables; never changes the schema. `databaseUser` also allows DDL, which the custom role leaves out |
 
 ## Networking for Dataflow workers
 
@@ -100,7 +165,7 @@ matches the project:
 |---|---|---|
 | `default` VPC exists, external IPs allowed | none | - |
 | No `default` VPC (common in organisation projects), external IPs allowed | `--subnetwork regions/<region>/subnetworks/<subnet>` (the VM's subnet, in the job's region; the full URL also works and is required for Shared VPC) | - |
-| External IPs not allowed (org policy `compute.vmExternalIpAccess`) | `--subnetwork <url> --no_use_public_ips` | Private Google Access on the subnet (workers reach Cloud Storage, Pub/Sub, Spanner), and either Cloud NAT so workers can `pip install` the package and its dependencies from PyPI, **or** a pre-built worker image: build `templates/Dockerfile.worker` (instructions in the file), push it to Artifact Registry and pass `--sdk_container_image <image>` (no PyPI needed; the image must match the submitting Python and Beam versions) |
+| External IPs not allowed (org policy `compute.vmExternalIpAccess`) | `--subnetwork <url> --no_use_public_ips` | Private Google Access on the subnet (workers reach Cloud Storage, Pub/Sub, Spanner), and either Cloud NAT so workers can `pip install` the package and its dependencies from PyPI, **or** a [pre-built worker image](#workers-without-pypi-access-pre-built-image) (`scripts/build_worker_image.sh`, then `C2S_WORKER_IMAGE`; no PyPI needed) |
 | Shared VPC (the subnet URL names another project) | `--subnetwork <url in the host project>` | The Dataflow service agent `service-<project number>@dataflow-service-producer-prod.iam.gserviceaccount.com` and the worker service account need `roles/compute.networkUser` on that subnet |
 
 Find the VM's subnet, and whether it has an external IP (Cloud Shell):
@@ -122,7 +187,7 @@ Step by step, add them after `$DF`: `crdb2spanner load -c $CFG -- $DF --subnetwo
 | `PERMISSION_DENIED … pubsub.subscriptions.consume` on `subscriptions seek` | VM service account had only viewer access to the subscription | Re-run `gcp_setup.sh` (now grants subscriber on that subscription), or skip the seek on a first run |
 | CockroachDB `EXPORT` / changefeed: permission or credential errors writing `gs://` | VM scopes, or no bucket role for the VM service account | Fix scopes (above); re-run `gcp_setup.sh` with `VM_SA` |
 | Dataflow: `Network default is not accessible to Dataflow Service account or does not exist` | Project has no `default` VPC | `--subnetwork <url>` ([Networking](#networking-for-dataflow-workers)) |
-| Dataflow workers stuck installing packages, or `pip` timeouts in worker logs | Workers without external IPs and no Cloud NAT | Cloud NAT on the subnet, or `--sdk_container_image` |
+| Dataflow workers stuck installing packages, or `pip` timeouts in worker logs | Workers without external IPs and no Cloud NAT | Cloud NAT on the subnet, or a [pre-built worker image](#workers-without-pypi-access-pre-built-image) |
 | Dataflow rejects the job's Python version | No worker image for the submitting Python version | Submit from a Python 3.12 venv (Prerequisites) |
 | Warning: temp bucket has soft-delete enabled | Cost notice only | Optionally turn off soft delete on the bucket |
 | Warning: `.whl … must be binary-compatible with the worker runtime` | The package is pure Python | Ignore |

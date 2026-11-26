@@ -87,16 +87,32 @@ _PACKAGING_FLAGS = ("--extra_package", "--extra_packages", "--setup_file", "--sd
 
 
 def ship_package(beam_args: list[str]) -> list[str]:
-    """Dataflow workers need this package. When submitting to Dataflow from a source checkout with
-    no packaging flag of your own, build a wheel of the checkout and add ``--extra_package``."""
+    """Dataflow workers need this package. When submitting to Dataflow with no packaging flag of
+    your own:
+
+    - ``C2S_WORKER_IMAGE`` set: run the workers on that pre-built image (templates/Dockerfile.worker),
+      which already contains the package and its dependencies, so workers need no PyPI access;
+    - otherwise, from a source checkout: build a wheel of the checkout and add ``--extra_package``
+      (workers then pip-install its dependencies from PyPI).
+    """
+    import os
     import subprocess
     import sys
     import tempfile
     from pathlib import Path
 
     joined = " ".join(beam_args)
-    if "DataflowRunner" not in joined or any(f in joined for f in _PACKAGING_FLAGS[:-1]):
+    if "DataflowRunner" not in joined:
         return beam_args
+    if "--sdk_container_image" in joined and "--sdk_location" not in joined:
+        # the image already has the SDK: don't stage (download) another copy for the workers
+        return [*beam_args, "--sdk_location", "container"]
+    if any(f in joined for f in _PACKAGING_FLAGS[:-1]):
+        return beam_args
+    image = os.environ.get("C2S_WORKER_IMAGE")
+    if image:
+        log.info("Dataflow workers use the pre-built image %s", image)
+        return [*beam_args, "--sdk_container_image", image, "--sdk_location", "container"]
     root = Path(__file__).resolve().parents[4]
     if not (root / "pyproject.toml").exists():
         log.warning("not running from a source checkout: pass --extra_package or --sdk_container_image "

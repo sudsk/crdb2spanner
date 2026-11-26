@@ -20,6 +20,7 @@ CREATE TABLE customers (
   profile    JSONB,
   tags       STRING[],
   INDEX customers_country_idx (country) STORING (full_name),
+  INDEX customers_email_idx (email),            -- same key as the UNIQUE email index: skipped
   INVERTED INDEX customers_profile_idx (profile)
 );
 
@@ -95,10 +96,13 @@ CREATE TABLE type_zoo (
   emoji    STRING
 );
 
--- T8  reserved-word table name, STRING primary key
+-- T8  reserved-word table name, STRING primary key, unique index identical to the PK,
+--     FK to a UNIQUE non-key column of another table
 CREATE TABLE "user" (
   id      STRING PRIMARY KEY,
-  display STRING
+  display STRING,
+  email   STRING REFERENCES customers (email),
+  UNIQUE INDEX user_id_uq (id)
 );
 
 -- T9  leading-underscore column name, expression index, column-based row TTL,
@@ -107,15 +111,16 @@ CREATE TABLE messages (
   _id               STRING      NOT NULL PRIMARY KEY,
   body              JSONB,
   sender_email      STRING,
-  insertedtimestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  inserted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX messages_sender_lower_idx ((lower(sender_email))),
-  INDEX by_inserted (insertedtimestamp)
-) WITH (ttl_expiration_expression = 'insertedtimestamp + INTERVAL ''90 days''');
+  INDEX by_inserted (inserted_at)
+) WITH (ttl_expiration_expression = 'inserted_at + INTERVAL ''90 days''');
 
--- T10 sequence-backed key (batch-framework style), standalone sequence, CHECK on a status,
+-- T10 sequence-backed key (batch-framework style), standalone sequences (one INCREMENT 50), CHECK on a status,
 --     duplicate index, index name clashing with T9
 CREATE SEQUENCE job_execution_seq;
 CREATE SEQUENCE hibernate_sequence;
+CREATE SEQUENCE orders_seq INCREMENT 50;        -- ORM pooled allocation (allocationSize=50)
 CREATE TABLE job_execution (
   id      INT8        NOT NULL DEFAULT nextval('job_execution_seq') PRIMARY KEY,
   status  STRING      NOT NULL DEFAULT 'STARTED' CHECK (status IN ('STARTED', 'COMPLETED', 'FAILED')),

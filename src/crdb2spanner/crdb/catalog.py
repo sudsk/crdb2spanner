@@ -86,7 +86,10 @@ class Catalog:
     enums: dict[str, list[str]] = field(default_factory=dict)
     sequences: list[str] = field(default_factory=list)
     sequence_values: dict[str, int] = field(default_factory=dict)  # last value per sequence
+    sequence_increments: dict[str, int] = field(default_factory=dict)  # INCREMENT BY per sequence
     settings: dict[str, str] = field(default_factory=dict)
+    # primary_key_overrides checked against the data: table -> {columns, duplicates, nulls, error}
+    key_checks: dict[str, dict] = field(default_factory=dict)
 
     def table(self, name: str) -> Table:
         for t in self.tables:
@@ -123,7 +126,9 @@ class Catalog:
             enums=d.get("enums", {}),
             sequences=d.get("sequences", []),
             sequence_values=d.get("sequence_values", {}),
+            sequence_increments=d.get("sequence_increments", {}),
             settings=d.get("settings", {}),
+            key_checks=d.get("key_checks", {}),
         )
 
     @classmethod
@@ -253,10 +258,17 @@ def introspect(conn, database: str, schema: str = "public", only: list[str] | No
         pass
 
     cur.execute(
-        "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema = %s",
+        "SELECT sequence_name, increment FROM information_schema.sequences WHERE sequence_schema = %s",
         (schema,),
     )
-    sequences = [r[0] for r in cur.fetchall()]
+    seq_rows = cur.fetchall()
+    sequences = [r[0] for r in seq_rows]
+    sequence_increments: dict[str, int] = {}
+    for sname, inc in seq_rows:
+        try:
+            sequence_increments[sname] = int(inc)
+        except (TypeError, ValueError):
+            pass
     sequence_values: dict[str, int] = {}
     for sname in sequences:
         try:
@@ -268,8 +280,31 @@ def introspect(conn, database: str, schema: str = "public", only: list[str] | No
     tables = [_introspect_table(cur, schema, n) for n in names]
     return Catalog(
         database=database, version=version, tables=tables, enums=enums,
-        sequences=sequences, sequence_values=sequence_values, settings=settings,
+        sequences=sequences, sequence_values=sequence_values, sequence_increments=sequence_increments,
+        settings=settings,
     )
+
+
+def check_key_overrides(conn, schema: str, overrides: dict[str, list[str]]) -> dict[str, dict]:
+    """For each table given a natural primary key (primary_key_overrides), count source rows that
+    would collide on that key or have a NULL in it. Either would lose rows on Spanner (rows with the
+    same key merge into one; key columns must be NOT NULL). Read-only."""
+    out: dict[str, dict] = {}
+    cur = conn.cursor()
+    for table, cols in (overrides or {}).items():
+        qcols = ", ".join(f'"{c}"' for c in cols)
+        src = f'"{schema}"."{table}"'
+        r: dict = {"columns": list(cols)}
+        try:
+            cur.execute(f"SELECT count(*) FROM (SELECT {qcols} FROM {src} GROUP BY {qcols} HAVING count(*) > 1) AS d")
+            r["duplicates"] = int(cur.fetchone()[0])
+            nulls = " OR ".join(f'"{c}" IS NULL' for c in cols)
+            cur.execute(f"SELECT count(*) FROM {src} WHERE {nulls}")
+            r["nulls"] = int(cur.fetchone()[0])
+        except Exception as e:  # noqa: BLE001 - reported as a finding, never fatal
+            r["error"] = str(e).splitlines()[0][:200]
+        out[table] = r
+    return out
 
 
 def _introspect_table(cur, schema: str, name: str) -> Table:

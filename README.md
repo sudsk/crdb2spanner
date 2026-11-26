@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (98 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, and the same data and CDC scenarios run end to end on real GCP (Cloud Storage, Dataflow, Spanner PostgreSQL dialect); see [Test status](#test-status). Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (103 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, and the same data and CDC scenarios run end to end on real GCP (Cloud Storage, Dataflow, Spanner PostgreSQL dialect); see [Test status](#test-status). Not production-ready.
 
 ## Why this exists
 
@@ -68,7 +68,8 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Identifier renames, database-wide names, sequences, `unique_rowid()` → sequence defaults, native `uuid`, expression / duplicate indexes, CHECK, TTL, natural-key overrides | `schema/converter.py` | Implemented, passing in e2e |
 | Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |
 | Cutover gating (watermarks, lag thresholds), metadata DB, dashboards, Terraform | - | Not built |
-| Flex Templates, pre-built worker image | `templates/` | Scaffold, not yet exercised |
+| Pre-built Dataflow worker image (workers without PyPI access) | `templates/Dockerfile.worker`, `scripts/build_worker_image.sh`, `C2S_WORKER_IMAGE` | Implemented, not yet run on GCP |
+| Flex Templates | `templates/Dockerfile`, `templates/flex_main.py` | Scaffold, not yet exercised |
 
 ## How a migration works (operator view)
 
@@ -118,10 +119,11 @@ Profiles are sections of the job YAML (`source`, `target`). Artefacts land in `.
 
 ## Prerequisites
 
-- CockroachDB **v23.1+** (to be confirmed per client) with `kv.rangefeed.enabled = true`, and changefeed licensing in place (Enterprise / Core changefeeds).
-- Network egress from CockroachDB to Cloud Storage and Pub/Sub (changefeeds and `EXPORT` push data out).
+- CockroachDB **v23.1+** (tested: v24.3) with `kv.rangefeed.enabled = true`, and changefeed licensing in place.
+- A **read-only** migration user: `SELECT`, `CHANGEFEED` and `EXTERNALIOIMPLICITACCESS`, no `CREATE` ([exact grants](docs/gcp-runbook.md#source-cockroachdb-user-least-privilege)).
+- Network egress from CockroachDB to Cloud Storage (changefeeds and `EXPORT` push data out). Dataflow never connects to CockroachDB ([network paths](docs/gcp-runbook.md#network-paths)).
 - A Spanner instance with a **PostgreSQL-dialect** database.
-- A GCP project with Dataflow, Pub/Sub, Cloud Storage, Secret Manager and Cloud Monitoring enabled, plus service accounts per [ARCHITECTURE.md §9](ARCHITECTURE.md#9-security-and-networking).
+- A GCP project with Dataflow, Pub/Sub and Cloud Storage enabled, plus service accounts and roles (`scripts/gcp_setup.sh`, [Spanner roles](docs/gcp-runbook.md#spanner-roles)).
 - No source schema changes are required. Tables without a primary key (hidden `rowid`) are migrated with a bit-reversed key on Spanner, or with a natural key set in `primary_key_overrides`. Tables that use `diff`-dependent features (natural-key overrides) need their changefeed created `WITH diff`, which `changefeed create` does automatically.
 
 ## Known limitations (v0.1)

@@ -22,17 +22,17 @@ def col(name, typ, i, **kw):
 
 
 def test_leading_underscore_column_renamed_everywhere():
-    t = Table("ordermessages", [col("_id", "STRING", 1, nullable=False), col("body", "JSONB", 2),
+    t = Table("doc_messages", [col("_id", "STRING", 1, nullable=False), col("body", "JSONB", 2),
                                 col("sent", "TIMESTAMPTZ", 3)],
               ["_id"], indexes=[Index("om_sent_idx", ["sent"], storing=["_id"])])
     child = Table("acks", [col("id", "INT8", 1, nullable=False), col("msg_id", "STRING", 2)], ["id"],
-                  foreign_keys=[ForeignKey("acks_msg_fk", ["msg_id"], "ordermessages", ["_id"])])
+                  foreign_keys=[ForeignKey("acks_msg_fk", ["msg_id"], "doc_messages", ["_id"])])
     res = convert(Catalog("db", tables=[t, child]))
     ddl = res.render("tables")
     assert "id_ varchar NOT NULL" in ddl and "PRIMARY KEY (id_)" in ddl
     assert not re.search(r"(?<![\w])_id\b", ddl)
-    assert "REFERENCES ordermessages (id_)" in res.render("post")
-    tm = res.mapping.table("ordermessages")
+    assert "REFERENCES doc_messages (id_)" in res.render("post")
+    tm = res.mapping.table("doc_messages")
     assert tm.col("_id").target == "id_" and tm.target_pk == ["id_"]
     assert any("renamed to id_" in i.message for i in res.issues)
 
@@ -146,7 +146,7 @@ def test_ttl_expression_becomes_spanner_ttl_and_expire_after_is_flagged():
 
 # --- natural-key override for keyless tables ------------------------------------------------
 def _ops_catalog():
-    t = Table("api_target_operations", [
+    t = Table("link_target_ops", [
         col("rowid", "INT8", 1, nullable=False, hidden=True, default="unique_rowid()"),
         col("target_operation_id", "INT8", 2, nullable=False), col("api_operation_id", "INT8", 3, nullable=False),
         col("note", "STRING", 4)], ["rowid"])
@@ -154,13 +154,13 @@ def _ops_catalog():
 
 
 def test_primary_key_override_replaces_rowid():
-    opts = ConvertOptions(primary_key_overrides={"api_target_operations": ["target_operation_id", "api_operation_id"]})
+    opts = ConvertOptions(primary_key_overrides={"link_target_ops": ["target_operation_id", "api_operation_id"]})
     res = convert(_ops_catalog(), options=opts)
     ddl = res.render("tables")
     assert "PRIMARY KEY (target_operation_id, api_operation_id)" in ddl and "rowid" not in ddl.split("c2s_shadow")[0]
-    tm = res.mapping.table("api_target_operations")
+    tm = res.mapping.table("link_target_ops")
     assert tm.key_from_row and tm.primary_key == ["target_operation_id", "api_operation_id"]
-    sql = create_statement("db", "public", "api_target_operations", CdcConfig(sink="files", files_sink_uri="nodelocal://1/c"),
+    sql = create_statement("db", "public", "link_target_ops", CdcConfig(sink="files", files_sink_uri="nodelocal://1/c"),
                            "1.0", diff=tm.key_from_row)
     assert sql.endswith(", diff")
 
@@ -171,9 +171,9 @@ def test_envelope_carries_before_image():
 
 
 def test_natural_key_ops_update_key_change_and_delete():
-    opts = ConvertOptions(primary_key_overrides={"api_target_operations": ["target_operation_id", "api_operation_id"]})
+    opts = ConvertOptions(primary_key_overrides={"link_target_ops": ["target_operation_id", "api_operation_id"]})
     mapping_json = convert(_ops_catalog(), options=opts).mapping.to_json()
-    t = "api_target_operations"
+    t = "link_target_ops"
     events = [
         ChangeEvent(t, (111,), {"target_operation_id": 1, "api_operation_id": 2, "note": "x"}, HLC(5), None),
         ChangeEvent(t, (111,), {"target_operation_id": 1, "api_operation_id": 3, "note": "x"}, HLC(6),
@@ -196,8 +196,8 @@ def test_wave_renders_one_config_per_database(tmp_path):
     tpl = tmp_path / "t.yaml"
     tpl.write_text("job_id: '{db}'\nsource: {database: '{db}', dsn: 'postgresql://h/{db}'}\n"
                    "target: {project: p, instance: i, database: '{db}'}\n")
-    paths = render_configs(tpl, ["propapi", "edge"], tmp_path / "out")
-    assert sorted(paths) == ["edge", "propapi"] and "database: 'edge'" in paths["edge"].read_text()
+    paths = render_configs(tpl, ["billing", "inventory"], tmp_path / "out")
+    assert sorted(paths) == ["billing", "inventory"] and "database: 'billing'" in paths["billing"].read_text()
     with pytest.raises(ValueError):
         (tmp_path / "bad.yaml").write_text("job_id: x\n")
         render_configs(tmp_path / "bad.yaml", ["a"], tmp_path / "o2")
@@ -210,3 +210,61 @@ def test_check_expressions_use_postgres_type_names():
     assert strip_casts("status::STRING = 'x'") == "status::text = 'x'"
     assert strip_casts("(qty::INT8 > 0) AND (x::FLOAT8[] IS NULL)") == "(qty::bigint > 0) AND (x::double precision[] IS NULL)"
     assert strip_casts("ts::TIMESTAMPTZ") == "ts::timestamptz"
+
+
+def test_redundant_indexes_dropped_pk_copy_and_unique_cover():
+    t = Table("product_history",
+              [col("track_code", "UUID", 1, nullable=False), col("product_id", "UUID", 2),
+               col("name", "STRING", 3), col("ts", "TIMESTAMPTZ", 4)], ["track_code"],
+              indexes=[Index("history_track_code_uq", ["track_code"], unique=True),          # same as the PK
+                       Index("history_name_key", ["name"], unique=True),
+                       Index("history_name_idx", ["name"]),                              # covered by the unique one
+                       Index("history_name_ts_idx", ["name", "ts"]),                     # different key: kept
+                       Index("history_name_desc_idx", ["name"], directions=["DESC"]),    # different order: kept
+                       Index("history_name_store_idx", ["name"], storing=["ts"])])       # stores more: kept
+    res = convert(Catalog("db", tables=[t]))
+    names = " ".join(res.index_ddl)
+    assert "history_track_code_uq" not in names and "history_name_idx " not in names + " "
+    for kept in ("history_name_key", "history_name_ts_idx", "history_name_desc_idx", "history_name_store_idx"):
+        assert kept in names
+    msgs = " ".join(i.message for i in res.issues)
+    assert "same columns as the primary key" in msgs and "unique index history_name_key has the same key" in msgs
+
+
+def test_key_override_data_check_blocks_conversion_and_assessment():
+    from crdb2spanner.assess.rules import assess
+
+    t = Table("link_target_ops", [col("target_id", "STRING", 1), col("op_id", "STRING", 2),
+                                        col("rowid", "INT8", 3, nullable=False, hidden=True)], ["rowid"])
+    cat = Catalog("db", tables=[t], settings={"kv.rangefeed.enabled": "true"},
+                  key_checks={"link_target_ops": {"columns": ["target_id", "op_id"],
+                                                        "duplicates": 3, "nulls": 1}})
+    opts = ConvertOptions(primary_key_overrides={"link_target_ops": ["target_id", "op_id"]})
+    res = convert(cat, options=opts)
+    assert any(i.severity == "blocker" and "3 duplicate" in i.message for i in res.issues)
+    rules = {f.rule: f.severity for f in assess(cat)}
+    assert rules["KEY_OVERRIDE_NOT_UNIQUE"] == "blocker" and rules["KEY_OVERRIDE_NULLS"] == "blocker"
+    clean = Catalog("db", tables=[t], key_checks={"link_target_ops": {"columns": ["target_id", "op_id"],
+                                                                            "duplicates": 0, "nulls": 0}})
+    assert not [i for i in convert(clean, options=opts).issues if i.severity == "blocker"]
+
+
+def test_sequence_increment_flagged_for_orm_allocation():
+    from crdb2spanner.assess.rules import assess
+
+    cat = Catalog("db", sequences=["orders_seq", "job_seq"],
+                  sequence_increments={"orders_seq": 50, "job_seq": 1})
+    found = [f for f in assess(cat) if f.rule == "SEQUENCE_INCREMENT"]
+    assert len(found) == 1 and "orders_seq" in found[0].message and "allocationSize=1" in found[0].remedy
+    assert Catalog.from_dict(json.loads(cat.to_json())).sequence_increments == {"orders_seq": 50, "job_seq": 1}
+
+
+def test_assess_reports_pk_copy_and_unique_covered_indexes():
+    from crdb2spanner.assess.rules import assess
+
+    t = Table("user", [col("id", "STRING", 1, nullable=False), col("email", "STRING", 2)], ["id"],
+              indexes=[Index("user_id_uq", ["id"], unique=True), Index("user_email_key", ["email"], unique=True),
+                       Index("user_email_idx", ["email"])])
+    msgs = [f.message for f in assess(Catalog("db", tables=[t])) if f.rule == "DUPLICATE_INDEX"]
+    assert any("same columns as the primary key" in m for m in msgs)
+    assert any("user_email_idx has the same key as unique index user_email_key" in m for m in msgs)

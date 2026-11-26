@@ -43,6 +43,30 @@ def assess(catalog: Catalog, only: list[str] | None = None, exclude: list[str] |
                          f"{len(catalog.sequences)} sequence(s): {', '.join(catalog.sequences[:10])}"
                          + (" ..." if len(catalog.sequences) > 10 else ""),
                          "generated as bit-reversed sequences with SKIP RANGE past their current values"))
+    for sname, inc in sorted(catalog.sequence_increments.items()):
+        if inc != 1:
+            f.append(Finding(None, None, "SEQUENCE_INCREMENT", "medium",
+                             f"sequence {sname} has INCREMENT {inc}; bit-reversed sequences have no increment",
+                             "application change: an ORM that pre-allocates ids from it (e.g. Hibernate "
+                             f"@SequenceGenerator allocationSize={inc}) must use allocationSize=1"))
+
+    for table, r in sorted(catalog.key_checks.items()):
+        cols = ", ".join(r.get("columns", []))
+        if r.get("error"):
+            f.append(Finding(table, None, "KEY_OVERRIDE_UNCHECKED", "medium",
+                             f"could not check primary_key_overrides ({cols}) against the data: {r['error']}",
+                             "check by hand: no duplicate and no NULL values in the chosen key columns"))
+            continue
+        if r.get("duplicates"):
+            f.append(Finding(table, None, "KEY_OVERRIDE_NOT_UNIQUE", "blocker",
+                             f"primary_key_overrides ({cols}): {r['duplicates']} key value(s) occur more than "
+                             "once in the source; those rows would merge into one on Spanner",
+                             "choose key columns that are unique in the data, or drop the override "
+                             "(the hidden rowid then becomes the Spanner key)"))
+        if r.get("nulls"):
+            f.append(Finding(table, None, "KEY_OVERRIDE_NULLS", "blocker",
+                             f"primary_key_overrides ({cols}): {r['nulls']} row(s) have NULL in a key column",
+                             "choose NOT NULL key columns, or drop the override"))
 
     tables = [t for t in catalog.tables if not ((only and t.name not in only) or t.name in exclude)]
     for t in tables:
@@ -123,13 +147,25 @@ def _table_rules(t: Table, catalog: Catalog) -> list[Finding]:
     if count_families(t.create_statement) > 1:
         add(None, "COLUMN_FAMILIES", "high",
             "multiple column families: changefeeds need split_column_families, which CDC apply does not "
-            "support yet (roadmap)", "exclude the table for now; split_column_families support is on the roadmap (no source change needed)")
+            "support yet", "exclude the table for now (no source change needed); split_column_families support is not built")
     sigs: dict[tuple, str] = {}
+
+    def key(i):
+        return tuple(i.columns), tuple(d.upper() for d in (i.directions or ["ASC"] * len(i.columns)))
+
+    uniques = {key(i): i for i in t.indexes if i.unique and not i.partial and not i.inverted}
     for i in t.indexes:
         sig = (i.unique, tuple(i.columns), tuple(i.directions), tuple(sorted(i.storing)), i.partial)
         if sig in sigs:
             add(None, "DUPLICATE_INDEX", "medium", f"index {i.name} duplicates {sigs[sig]}",
                 "skipped in Spanner (avoids write amplification)")
+        elif not i.partial and not i.inverted and key(i) == (tuple(t.primary_key), tuple("ASC" for _ in t.primary_key)):
+            add(None, "DUPLICATE_INDEX", "medium", f"index {i.name} has the same columns as the primary key",
+                "skipped in Spanner (the primary key already provides it)")
+        elif (not i.unique and not i.partial and not i.inverted and key(i) in uniques
+              and set(i.storing) <= set(uniques[key(i)].storing)):
+            add(None, "DUPLICATE_INDEX", "medium", f"index {i.name} has the same key as unique index "
+                f"{uniques[key(i)].name}", "skipped in Spanner (the unique index already serves its queries)")
         sigs.setdefault(sig, i.name)
         if any(c.startswith("crdb_internal_idx_expr") for c in i.columns):
             expr = ", ".join(e for e in (i.expressions or []) if e) or "expression"

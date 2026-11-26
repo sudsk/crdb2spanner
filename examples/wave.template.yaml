@@ -13,8 +13,8 @@ target:
   database: "{db}"
 
 uuid_native: true
-# rename_columns: {"ordermessages._id": "message_id"}
-# primary_key_overrides: {"api_target_operations": ["target_operation_id", "api_operation_id"]}
+# rename_columns: {"doc_messages._id": "message_id"}
+# primary_key_overrides: {"link_target_ops": ["target_operation_id", "api_operation_id"]}
 
 cdc:
   sink: files

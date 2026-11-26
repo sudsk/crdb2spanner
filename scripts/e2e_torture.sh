@@ -115,11 +115,15 @@ want = {
     ("messages", "INVALID_IDENTIFIER"), ("messages", "EXPRESSION_INDEX"),
     ("job_execution", "SEQUENCE_DEFAULT"), ("job_execution", "DUPLICATE_INDEX"),
     ("job_execution", "CHECK_CONSTRAINTS"), ("job_execution_params", "HIDDEN_ROWID_PK"),
-    ("messages", "NAME_COLLISION"), (None, "SEQUENCES"),
+    ("messages", "NAME_COLLISION"), (None, "SEQUENCES"), (None, "SEQUENCE_INCREMENT"),
+    ("customers", "DUPLICATE_INDEX"), ("user", "DUPLICATE_INDEX"),
 }
 missing = sorted(want - got)
+# the natural key chosen for job_execution_params is unique and non-null in the seed data
+unexpected = sorted(g for g in got if g[1].startswith("KEY_OVERRIDE"))
 print("missing findings:", missing) if missing else print("all expected findings present")
-sys.exit(1 if missing else 0)
+print("unexpected findings:", unexpected) if unexpected else None
+sys.exit(1 if missing or unexpected else 0)
 EOF
 must c2s convert -c "$CFG"
 D=.local/jobs/torture
@@ -130,6 +134,9 @@ check "convert: natural key override"          grep -q 'PRIMARY KEY (job_executi
 # job_status_idx and job_status_dup_idx are identical; exactly one survives (catalog order decides which)
 check "convert: duplicate index skipped"       bash -c "[ \$(grep -cE 'job_status_(dup_)?idx' $D/ddl_indexes.sql) -eq 1 ]"
 check "convert: TTL policy generated"          grep -q 'ADD TTL INTERVAL' $D/ddl_post.sql
+check "convert: index identical to PK skipped" bash -c "! grep -q user_id_uq $D/ddl_indexes.sql"
+check "convert: index covered by unique skipped" bash -c "! grep -q customers_email_idx $D/ddl_indexes.sql"
+check "convert: FK to a unique non-key column" grep -q 'REFERENCES customers (email)' $D/ddl_post.sql
 must c2s schema apply -c "$CFG" --phase tables
 
 step "3. Snapshot (EXPORT AS OF T0) + bulk load"

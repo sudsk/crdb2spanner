@@ -9,4 +9,4 @@ UPDATE "Order" SET amount = amount + 1 WHERE order_no = 2;   -- STORED computed 
 INSERT INTO audit_log (actor) SELECT 'cdc' || i::STRING FROM generate_series(1, 300) AS g(i);
 UPDATE readings SET dur = dur + '1 hour'::INTERVAL, t = t + '1 second'::INTERVAL WHERE device_id = 7;
 UPDATE type_zoo SET arr_int = array_append(arr_int, 42), doc = doc || '{"touched": 1}' WHERE id BETWEEN 100 AND 199;
-INSERT INTO "user" VALUES ('u-new-1', 'New user');
+INSERT INTO "user" (id, display) VALUES ('u-new-1', 'New user');

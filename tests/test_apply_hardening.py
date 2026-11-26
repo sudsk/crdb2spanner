@@ -235,3 +235,18 @@ def test_region_move_same_hlc_upsert_beats_delete():
     rm = Op("accounts", "accounts", "delete", ("a1",), None, t)
     assert [o.kind for o in dedupe([up, rm])] == ["upsert"]
     assert [o.kind for o in dedupe([rm, up])] == ["upsert"]
+
+
+def test_dataflow_worker_image_args(monkeypatch):
+    from crdb2spanner.pipelines.common.io import ship_package
+
+    df = ["--runner", "DataflowRunner", "--project", "p"]
+    monkeypatch.setenv("C2S_WORKER_IMAGE", "europe-west2-docker.pkg.dev/p/c2s/worker:0.1")
+    out = ship_package(df)
+    assert out[-4:] == ["--sdk_container_image", "europe-west2-docker.pkg.dev/p/c2s/worker:0.1",
+                        "--sdk_location", "container"]
+    monkeypatch.delenv("C2S_WORKER_IMAGE")
+    own = ship_package([*df, "--sdk_container_image", "img"])
+    assert own[-2:] == ["--sdk_location", "container"]
+    assert ship_package([*df, "--sdk_container_image", "img", "--sdk_location", "x"])[-1] == "x"
+    assert ship_package(["--runner", "DirectRunner"]) == ["--runner", "DirectRunner"]

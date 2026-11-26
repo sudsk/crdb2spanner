@@ -187,6 +187,13 @@ def convert(
 
     res = ConversionResult()
     names = _Names()
+    for t in tables:  # data checks made by `assess` on natural keys
+        chk = catalog.key_checks.get(t.name) if t.name in opt.primary_key_overrides else None
+        if chk and (chk.get("duplicates") or chk.get("nulls")):
+            res.issues.append(Issue(t.name, None, "blocker",
+                                    f"primary_key_overrides ({', '.join(chk.get('columns', []))}) is not a valid "
+                                    f"key in the source data: {chk.get('duplicates', 0)} duplicate value(s), "
+                                    f"{chk.get('nulls', 0)} row(s) with NULL - rows would be lost"))
     # pass 1: table + column names (FKs and indexes need every table's renames)
     tnames: dict[str, str] = {}
     cnames: dict[tuple[str, str], str] = {}
@@ -396,7 +403,29 @@ def _index_ddl(t: Table, tmap: TableMap, res: ConversionResult, names: _Names, c
     seen: dict[tuple, str] = {}
     pk_set = set(tmap.primary_key)
     mapped = {c.source: c for c in tmap.columns}
+
+    def raw_key(i):
+        return tuple(i.columns), tuple(d.upper() for d in (i.directions or ["ASC"] * len(i.columns)))
+
+    # full (non-partial) unique indexes: a non-unique index with the same key adds nothing
+    unique_keys: dict[tuple, tuple[str, set]] = {}
     for i in t.indexes:
+        if i.unique and not i.primary and not i.partial and not i.inverted:
+            unique_keys.setdefault(raw_key(i), (i.name, set(i.storing)))
+    pk_key = (tuple(t.primary_key), tuple("ASC" for _ in t.primary_key))
+    for i in t.indexes:
+        if i.primary:
+            continue
+        if not i.partial and not i.inverted and raw_key(i) == pk_key:
+            res.issues.append(Issue(t.name, None, "info",
+                                    f"index {i.name} skipped - same columns as the primary key (redundant)"))
+            continue
+        cover = unique_keys.get(raw_key(i))
+        if (not i.unique and not i.partial and not i.inverted and cover
+                and set(i.storing) <= cover[1]):
+            res.issues.append(Issue(t.name, None, "info",
+                                    f"index {i.name} skipped - unique index {cover[0]} has the same key"))
+            continue
         if i.inverted:
             res.issues.append(Issue(t.name, None, "medium",
                                     f"inverted index {i.name} skipped - use Spanner search index"))

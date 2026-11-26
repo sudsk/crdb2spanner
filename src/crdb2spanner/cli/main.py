@@ -63,11 +63,12 @@ def assess(config: Path = ConfigOpt):
     from ..assess.rules import assess as run_rules
     from ..assess.rules import render_json, render_markdown
     from ..crdb import connect
-    from ..crdb.catalog import introspect
+    from ..crdb.catalog import check_key_overrides, introspect
 
     cfg, jd, st = _ctx(config)
     with connect(cfg.source.resolve_dsn()) as conn:
         cat = introspect(conn, cfg.source.database, cfg.source.schema)
+        cat.key_checks = check_key_overrides(conn, cfg.source.schema, cfg.primary_key_overrides)
     (jd / "catalog.json").write_text(cat.to_json())
     findings = run_rules(cat, cfg.tables or None, cfg.exclude_tables)
     (jd / "assessment.md").write_text(render_markdown(cat, findings))
