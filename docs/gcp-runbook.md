@@ -99,7 +99,7 @@ matches the project:
 | Project network | Dataflow options to add | Also needed |
 |---|---|---|
 | `default` VPC exists, external IPs allowed | none | - |
-| No `default` VPC (common in organisation projects), external IPs allowed | `--subnetwork <full subnet URL>` (use the VM's subnet, in the job's region) | - |
+| No `default` VPC (common in organisation projects), external IPs allowed | `--subnetwork regions/<region>/subnetworks/<subnet>` (the VM's subnet, in the job's region; the full URL also works and is required for Shared VPC) | - |
 | External IPs not allowed (org policy `compute.vmExternalIpAccess`) | `--subnetwork <url> --no_use_public_ips` | Private Google Access on the subnet (workers reach Cloud Storage, Pub/Sub, Spanner), and either Cloud NAT so workers can `pip install` the package and its dependencies from PyPI, **or** a pre-built worker image: build `templates/Dockerfile.worker` (instructions in the file), push it to Artifact Registry and pass `--sdk_container_image <image>` (no PyPI needed; the image must match the submitting Python and Beam versions) |
 | Shared VPC (the subnet URL names another project) | `--subnetwork <url in the host project>` | The Dataflow service agent `service-<project number>@dataflow-service-producer-prod.iam.gserviceaccount.com` and the worker service account need `roles/compute.networkUser` on that subnet |
 
@@ -110,8 +110,8 @@ gcloud compute instances describe VM --zone Z \
   --format='value(networkInterfaces[0].subnetwork,networkInterfaces[0].accessConfigs[0].natIP)'
 ```
 
-For `e2e_gcp.sh`, pass the options in `DF_EXTRA`, e.g.
-`DF_EXTRA="--subnetwork https://www.googleapis.com/compute/v1/projects/P/regions/europe-west2/subnetworks/S"`.
+For `e2e_gcp.sh`, pass the options in `DF_EXTRA`, e.g. `DF_EXTRA="--subnetwork regions/europe-west2/subnetworks/S"`.
+Step by step, add them after `$DF`: `crdb2spanner load -c $CFG -- $DF --subnetwork regions/europe-west2/subnetworks/S --job_name c2s-torture-load`.
 
 ## Troubleshooting (seen on real projects)
 
