@@ -48,6 +48,8 @@ hlc()    { crdb_q "SELECT cluster_logical_timestamp()::STRING"; }
 DF=(--runner DataflowRunner --project "$GCP_PROJECT" --region "$REGION"
     --temp_location "gs://$BUCKET/dataflow/tmp" --staging_location "gs://$BUCKET/dataflow/staging"
     --service_account_email "$WORKER_SA")
+# extra Dataflow options, e.g. DF_EXTRA="--subnetwork <full subnetwork URL> --no_use_public_ips"
+read -r -a _extra <<<"${DF_EXTRA:-}"; DF+=("${_extra[@]}")
 
 wait_flush() {
   local t=$1 behind

@@ -23,7 +23,7 @@ bucket.
 | VM access scope **cloud-platform** | CockroachDB writes to Cloud Storage with the VM identity (`AUTH=implicit`). The default scopes only allow reading from Cloud Storage. Stop the VM, then `gcloud compute instances set-service-account VM --zone Z --scopes cloud-platform` |
 | `gcloud` authenticated as someone who can create IAM bindings | `scripts/gcp_setup.sh` |
 | Python 3.10–3.12 virtualenv on the VM | Dataflow workers run the same Python minor version as the machine that submits the job. If Dataflow rejects your Python version (3.13/3.14 may not have Dataflow worker images yet), create a 3.12 venv: `uv venv -p 3.12 .venv312 && . .venv312/bin/activate && uv pip install -e .` |
-| A default VPC in the region | Dataflow workers. Otherwise add `--subnetwork regions/R/subnetworks/S` to the Dataflow options |
+| A VPC subnet in the region for Dataflow workers | Without a `default` network, pass the VM's subnet: `--subnetwork https://www.googleapis.com/compute/v1/projects/P/regions/R/subnetworks/S` (for `e2e_gcp.sh`: `DF_EXTRA="--subnetwork ..."`). Add `--no_use_public_ips` where external IPs are not allowed; workers then need Private Google Access on the subnet and a route to PyPI (Cloud NAT) to install the package. With Shared VPC, the Dataflow service agent needs `compute.networkUser` on the host subnet |
 
 ## 1. One-off setup (idempotent)
 
