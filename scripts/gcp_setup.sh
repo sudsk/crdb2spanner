@@ -20,6 +20,8 @@ SUB=c2s-torture-cdc-files
 WORKER_SA_NAME=c2s-dataflow
 WORKER_SA=${WORKER_SA_NAME}@${GCP_PROJECT}.iam.gserviceaccount.com
 g() { gcloud --project "$GCP_PROJECT" --quiet "$@"; }
+# IAM changes for a just-created service account can fail for a minute or so ("does not exist"): retry
+retry() { local n; for n in 1 2 3 4 5 6 7 8 9 10 11 12; do "$@" && return 0; echo "  retrying in 10s ($n/12)"; sleep 10; done; return 1; }
 step() { printf '\n==> %s\n' "$*"; }
 
 step "APIs"
@@ -49,10 +51,10 @@ step "Dataflow worker service account $WORKER_SA"
 g iam service-accounts describe "$WORKER_SA" >/dev/null 2>&1 ||
   g iam service-accounts create "$WORKER_SA_NAME" --display-name "crdb2spanner Dataflow workers"
 for role in roles/dataflow.worker roles/spanner.databaseUser roles/pubsub.subscriber roles/pubsub.viewer; do
-  g projects add-iam-policy-binding "$GCP_PROJECT" --member "serviceAccount:$WORKER_SA" --role "$role" \
+  retry g projects add-iam-policy-binding "$GCP_PROJECT" --member "serviceAccount:$WORKER_SA" --role "$role" \
     --condition None >/dev/null
 done
-g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$WORKER_SA" \
+retry g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$WORKER_SA" \
   --role roles/storage.objectAdmin >/dev/null
 
 step "This VM's service account (runs CockroachDB EXPORT/changefeeds, the CLI and submits Dataflow jobs)"
@@ -74,7 +76,7 @@ if [ -n "$VM_SA" ]; then
   done
   g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$VM_SA" \
     --role roles/storage.objectAdmin >/dev/null
-  g iam service-accounts add-iam-policy-binding "$WORKER_SA" --member "serviceAccount:$VM_SA" \
+  retry g iam service-accounts add-iam-policy-binding "$WORKER_SA" --member "serviceAccount:$VM_SA" \
     --role roles/iam.serviceAccountUser >/dev/null
   echo "granted roles to $VM_SA"
   SCOPES=$(curl -sf -H 'Metadata-Flavor: Google' \
