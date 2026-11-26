@@ -44,7 +44,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Probes: geospatial | Fix pushed (changefeed GeoJSON converted to the EWKB that EXPORT writes), re-run pending |
 | Probes: column families | Known gap: CockroachDB requires `split_column_families`, which emits one partial event per family |
 | Multi-region (`scripts/e2e_multiregion.sh`): 3 regions, `REGIONAL BY ROW` / `GLOBAL` / `REGIONAL BY TABLE`, rows moving region | Passing |
-| Real Spanner + Dataflow (`scripts/e2e_gcp.sh`, [docs/gcp-runbook.md](docs/gcp-runbook.md)) | In progress. Passing so far: schema on real Spanner PG (native `uuid`, bit-reversed sequences, generated columns: all 31 DDL statements), `EXPORT` from CockroachDB straight to Cloud Storage. Dataflow bulk load from Cloud Storage into Spanner (project without a `default` VPC: `--subnetwork regions/europe-west2/subnetworks/...`). Next: full validation of the load, streaming CDC |
+| Real Spanner + Dataflow (`scripts/e2e_gcp.sh`, [docs/gcp-runbook.md](docs/gcp-runbook.md)) | In progress. Passing: schema on real Spanner PG (all 31 DDL statements, incl. native `uuid`, bit-reversed sequences, generated columns); `EXPORT` from CockroachDB to Cloud Storage; Dataflow bulk load; changefeeds to Cloud Storage → bucket notifications → streaming Dataflow → Spanner, validated exact on all 11 tables after scenario 01. Next: remaining CDC scenarios, indexes and FKs |
 
 ## Implementation status
 
