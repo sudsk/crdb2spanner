@@ -96,3 +96,11 @@ def test_snapshot_exports_geospatial_as_text():
 
     assert select_expr("loc", "geo:4326") == '"loc"::STRING AS "loc"'
     assert select_expr("id", "int") == '"id"'
+
+
+def test_validation_casts_text_arrays_as_arrays():
+    """STRING[] (transform array:to_text) must be read as STRING[], not STRING ('{a,b}' text)."""
+    from crdb2spanner.validate.compare import _text_cast
+
+    assert _text_cast("array:to_text") == "STRING[]" and _text_cast("array:inet") == "STRING[]"
+    assert _text_cast("to_text") == "STRING" and _text_cast("geo:4326") == "STRING"

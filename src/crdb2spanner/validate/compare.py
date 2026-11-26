@@ -100,7 +100,7 @@ def _scan_source(conn, cfg: JobConfig, tm: TableMap, as_of: str, buckets: int, k
     norms = normalisers(tm)
     # text-mapped types (INTERVAL, TIME, INET, ENUM...) are rendered by CockroachDB itself,
     # matching what the changefeed JSON / EXPORT emit
-    exprs = [f"{_q(c.source)}::STRING" if renders_as_text(c.transform) else _q(c.source)
+    exprs = [f"{_q(c.source)}::{_text_cast(c.transform)}" if renders_as_text(c.transform) else _q(c.source)
              for c in tm.columns]
     sql = (f"SELECT {', '.join(exprs)} FROM {_q(cfg.source.database)}."
            f"{_q(cfg.source.schema)}.{_q(tm.source)} AS OF SYSTEM TIME '{as_of}'")
@@ -158,6 +158,11 @@ def compare_table(conn, db, cfg: JobConfig, tm: TableMap, as_of_hlc: str, bucket
                 if len(diffs) >= 50:
                     break
     return TableResult(tm.source, src.rows, tgt.rows, len(bad), diffs)
+
+
+def _text_cast(transform: str | None) -> str:
+    """Arrays of text-rendered values stay arrays (STRING[]), matching the snapshot EXPORT."""
+    return "STRING[]" if (transform or "").startswith("array:") else "STRING"
 
 
 def _short(v: str, n: int = 60) -> str:
