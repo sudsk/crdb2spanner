@@ -21,16 +21,21 @@ bucket.
 |---|---|
 | The test VM with the docker compose stack (`docker compose up -d cockroach`) | Source CockroachDB |
 | VM access scope **cloud-platform** | CockroachDB writes to Cloud Storage with the VM identity (`AUTH=implicit`). The default scopes only allow reading from Cloud Storage. Stop the VM, then `gcloud compute instances set-service-account VM --zone Z --scopes cloud-platform` |
-| `gcloud` authenticated as someone who can create IAM bindings | `scripts/gcp_setup.sh` |
+| `gcloud` authenticated as someone who can create IAM bindings | `scripts/gcp_setup.sh`. Easiest from Cloud Shell as yourself (see 1) |
 | Python 3.10–3.12 virtualenv on the VM | Dataflow workers run the same Python minor version as the machine that submits the job. If Dataflow rejects your Python version (3.13/3.14 may not have Dataflow worker images yet), create a 3.12 venv: `uv venv -p 3.12 .venv312 && . .venv312/bin/activate && uv pip install -e .` |
-| A VPC subnet in the region for Dataflow workers | Without a `default` network, pass the VM's subnet: `--subnetwork https://www.googleapis.com/compute/v1/projects/P/regions/R/subnetworks/S` (for `e2e_gcp.sh`: `DF_EXTRA="--subnetwork ..."`). Add `--no_use_public_ips` where external IPs are not allowed; workers then need Private Google Access on the subnet and a route to PyPI (Cloud NAT) to install the package. With Shared VPC, the Dataflow service agent needs `compute.networkUser` on the host subnet |
+| A VPC subnet in the region for Dataflow workers | See [Networking for Dataflow workers](#networking-for-dataflow-workers) |
 
 ## 1. One-off setup (idempotent)
 
 ```bash
 export GCP_PROJECT=my-project REGION=europe-west2 BUCKET=my-project-c2s SPANNER_INSTANCE=c2s-test
-./scripts/gcp_setup.sh
+./scripts/gcp_setup.sh                       # on the VM, if its service account may change IAM (rare)
+VM_SA=<n>-compute@developer.gserviceaccount.com ./scripts/gcp_setup.sh   # from Cloud Shell, as yourself
 ```
+
+Running it from Cloud Shell is the usual case: the VM's default service account can't create IAM
+bindings. `VM_SA` names the VM's service account so the script grants it the roles below; the VM's
+access scopes still have to be fixed on the VM itself (Prerequisites).
 
 This creates:
 - the bucket
@@ -85,6 +90,42 @@ When you submit to Dataflow from a source checkout, the tool builds a wheel of t
 `--extra_package` so the workers have the code. Passing your own `--extra_package`, `--setup_file` or
 `--sdk_container_image` turns this off. For production, build the Flex Template image instead
 (`templates/Dockerfile`).
+
+## Networking for Dataflow workers
+
+Dataflow starts its workers on the network called `default` unless told otherwise. Pick the case that
+matches the project:
+
+| Project network | Dataflow options to add | Also needed |
+|---|---|---|
+| `default` VPC exists, external IPs allowed | none | - |
+| No `default` VPC (common in organisation projects), external IPs allowed | `--subnetwork <full subnet URL>` (use the VM's subnet, in the job's region) | - |
+| External IPs not allowed (org policy `compute.vmExternalIpAccess`) | `--subnetwork <url> --no_use_public_ips` | Private Google Access on the subnet (workers reach Cloud Storage, Pub/Sub, Spanner), and either Cloud NAT so workers can `pip install` the package and its dependencies from PyPI, **or** a pre-built worker image: build `templates/Dockerfile`, push it to Artifact Registry and pass `--sdk_container_image <image>` (no PyPI needed) |
+| Shared VPC (the subnet URL names another project) | `--subnetwork <url in the host project>` | The Dataflow service agent `service-<project number>@dataflow-service-producer-prod.iam.gserviceaccount.com` and the worker service account need `roles/compute.networkUser` on that subnet |
+
+Find the VM's subnet, and whether it has an external IP (Cloud Shell):
+
+```bash
+gcloud compute instances describe VM --zone Z \
+  --format='value(networkInterfaces[0].subnetwork,networkInterfaces[0].accessConfigs[0].natIP)'
+```
+
+For `e2e_gcp.sh`, pass the options in `DF_EXTRA`, e.g.
+`DF_EXTRA="--subnetwork https://www.googleapis.com/compute/v1/projects/P/regions/europe-west2/subnetworks/S"`.
+
+## Troubleshooting (seen on real projects)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ACCESS_TOKEN_SCOPE_INSUFFICIENT` from `gcloud` or the tool on the VM | VM created with default access scopes | Stop the VM; Edit → API and identity management → **Allow full access to all Cloud APIs** (= `cloud-platform`); start it. IAM roles then decide access |
+| `Service account c2s-dataflow@… does not exist` right after it was created | IAM propagation delay | `gcp_setup.sh` retries for up to 2 minutes; otherwise re-run it (idempotent) |
+| `PERMISSION_DENIED … pubsub.subscriptions.consume` on `subscriptions seek` | VM service account had only viewer access to the subscription | Re-run `gcp_setup.sh` (now grants subscriber on that subscription), or skip the seek on a first run |
+| CockroachDB `EXPORT` / changefeed: permission or credential errors writing `gs://` | VM scopes, or no bucket role for the VM service account | Fix scopes (above); re-run `gcp_setup.sh` with `VM_SA` |
+| Dataflow: `Network default is not accessible to Dataflow Service account or does not exist` | Project has no `default` VPC | `--subnetwork <url>` ([Networking](#networking-for-dataflow-workers)) |
+| Dataflow workers stuck installing packages, or `pip` timeouts in worker logs | Workers without external IPs and no Cloud NAT | Cloud NAT on the subnet, or `--sdk_container_image` |
+| Dataflow rejects the job's Python version | No worker image for the submitting Python version | Submit from a Python 3.12 venv (Prerequisites) |
+| Warning: temp bucket has soft-delete enabled | Cost notice only | Optionally turn off soft delete on the bucket |
+| Warning: `.whl … must be binary-compatible with the worker runtime` | The package is pure Python | Ignore |
 
 ## Notes
 
