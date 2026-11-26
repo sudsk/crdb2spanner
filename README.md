@@ -171,6 +171,30 @@ This project is built from public CockroachDB, Spanner, Dataflow and Apache Beam
 
 The work is I/O-bound: CockroachDB export and changefeed emission, reading Cloud Storage files and Spanner commit latency. Throughput comes from parallel commits across Dataflow workers and shards, and from Spanner node count, not from per-row CPU. The Beam Python SDK also has the more mature Dataflow features (Flex Templates, streaming, stateful processing). If a table turns out to be CPU-bound, raise `num_shards` and the worker count, or vectorise the hot transform with pyarrow.
 
+## Comparison with storj/spanner-migration
+
+While looking for existing CockroachDB → Spanner tooling we found [storj/spanner-migration](https://github.com/storj/spanner-migration) (Go, AGPL-3.0), which one company built to move its own CockroachDB databases to Spanner. It is a separate, independent project; this table compares the two as documented, based on its public repository as of its last commit (April 2025).
+
+| | storj/spanner-migration | crdb2spanner |
+|---|---|---|
+| Language / runtime | Go, one process per table | Python, Apache Beam on Dataflow |
+| Licence | AGPL-3.0 | Apache-2.0 |
+| Target dialect | GoogleSQL | PostgreSQL |
+| Scope | Built for one company's databases: table list, type changes and expected schema differences are built in | Any database, driven by job YAML; `wave` runs many databases |
+| Assessment | None | `assess`: incompatibility report with severities and remedies |
+| Schema conversion | Hand-written DDL for its own tables | Generated from the live catalog (`convert`) |
+| Initial load | Changefeed initial scan through Pub/Sub | `EXPORT … AS OF SYSTEM TIME T0` to Parquet, Dataflow bulk load, CDC from `cursor = T0` |
+| CDC transport | Pub/Sub topic per table | Cloud Storage files + bucket notifications (`gcs_notify`), Pub/Sub, or local files |
+| Ordering guard | Newest timestamp per key, kept in memory (lost on restart) | Newest HLC per row in Spanner shadow tables (survives restarts) |
+| Bad messages | Invalid message or checkpoint stops the process; a failing batch is retried whole | Dead-letter queue; the rest of the batch commits |
+| Commit size | Fixed batch size | Batches split by mutation count, including index entries (80,000 limit) |
+| Types beyond integers, floats, bytes, JSON | Passed through unchanged | Typed conversion per column (NUMERIC, arrays, INET, intervals, timestamps, UUID, geospatial, ...) |
+| CockroachDB features | Hidden `rowid`, `unique_rowid()` / sequences, partial indexes | Also hash-sharded keys, `REGIONAL BY ROW` (incl. rows moving region), expression indexes, ENUM, TTL, CHECK, name collisions, UUID-native keys |
+| Source changes | One deliberate column type change for its own schema | None |
+| Validation | Counts; full key-ordered diff with per-column detail; random sampling; mismatch CSV + revalidation; cross-engine schema diff | Counts; order-independent bucketed hashes at an exact HLC with drill-down to keys and columns. Schema diff, sampling and mismatch CSV are on the roadmap |
+| Operator tooling | Live backlog metric, message peek, Pub/Sub purge | Changefeed lag, `status`, Dataflow metrics, GCP setup/teardown scripts |
+| Production use | Yes, at the company that built it | Not yet: end-to-end suites pass against live CockroachDB and the Spanner emulator; real-GCP run in progress |
+
 ## Roadmap
 
 | Milestone | Scope |
