@@ -76,6 +76,9 @@ if [ -n "$VM_SA" ]; then
   done
   g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount:$VM_SA" \
     --role roles/storage.objectAdmin >/dev/null
+  # seek the notification subscription to "now" when resetting a test run
+  g pubsub subscriptions add-iam-policy-binding "$SUB" --member "serviceAccount:$VM_SA" \
+    --role roles/pubsub.subscriber >/dev/null
   retry g iam service-accounts add-iam-policy-binding "$WORKER_SA" --member "serviceAccount:$VM_SA" \
     --role roles/iam.serviceAccountUser >/dev/null
   echo "granted roles to $VM_SA"
