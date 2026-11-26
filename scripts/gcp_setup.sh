@@ -3,6 +3,7 @@
 #
 #   export GCP_PROJECT=my-project REGION=europe-west2 BUCKET=my-project-c2s SPANNER_INSTANCE=c2s-test
 #   ./scripts/gcp_setup.sh
+#   VM_SA=<n>-compute@developer.gserviceaccount.com ./scripts/gcp_setup.sh   # from Cloud Shell / laptop
 #
 # Creates: APIs, bucket, Spanner instance (100 processing units, regional), Pub/Sub topic + subscription
 # fed by bucket notifications for torture/cdc/, a Dataflow worker service account and IAM bindings for it
@@ -55,8 +56,17 @@ g storage buckets add-iam-policy-binding "gs://$BUCKET" --member "serviceAccount
   --role roles/storage.objectAdmin >/dev/null
 
 step "This VM's service account (runs CockroachDB EXPORT/changefeeds, the CLI and submits Dataflow jobs)"
-VM_SA=$(curl -sf -H 'Metadata-Flavor: Google' \
-  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)
+# From Cloud Shell or a laptop, name the VM's service account: VM_SA=123-compute@developer.gserviceaccount.com
+ON_VM=""
+if [ -z "${VM_SA:-}" ]; then
+  VM_SA=$(curl -sf -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email || true)
+  [ -n "$VM_SA" ] && ON_VM=1
+fi
+if [ -n "$VM_SA" ] && [[ "$VM_SA" != *.gserviceaccount.com ]]; then
+  echo "metadata server returned '$VM_SA', not a service account (Cloud Shell?): set VM_SA to the VM's service account"
+  VM_SA=""
+fi
 if [ -n "$VM_SA" ]; then
   for role in roles/spanner.databaseAdmin roles/dataflow.developer roles/pubsub.viewer; do
     g projects add-iam-policy-binding "$GCP_PROJECT" --member "serviceAccount:$VM_SA" --role "$role" \
@@ -69,7 +79,7 @@ if [ -n "$VM_SA" ]; then
   echo "granted roles to $VM_SA"
   SCOPES=$(curl -sf -H 'Metadata-Flavor: Google' \
     http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/scopes || true)
-  if ! grep -q "cloud-platform" <<<"$SCOPES"; then
+  if [ -n "$ON_VM" ] && ! grep -q "cloud-platform" <<<"$SCOPES"; then
     echo "WARNING: this VM's access scopes do not include cloud-platform, so CockroachDB cannot write to"
     echo "Cloud Storage and the CLI cannot reach Spanner. Stop the VM, then:"
     echo "  gcloud compute instances set-service-account <vm> --zone <zone> --scopes cloud-platform"
