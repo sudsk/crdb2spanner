@@ -82,7 +82,6 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | 5. Replicate (CDC) | A changefeed starting at `cursor = T0` streams changes to Pub/Sub (or GCS). A Dataflow streaming job applies them idempotently. | Serving |
 | 6. Validate | A Dataflow batch job compares row counts and chunked row hashes between source and target. | Serving |
 | 7. Cut over | Freeze writes, wait until the resolved timestamp passes the freeze point and the backlog reaches 0, switch apps to Spanner (via PGAdapter or Spanner drivers). | Short write pause |
-| 8. Fallback *(roadmap)* | Spanner change streams → Dataflow → CockroachDB, kept ready until sign-off. | Standby |
 
 Downtime is limited to the write freeze in step 7, usually seconds to minutes, depending on replication lag at the time.
 
@@ -133,7 +132,6 @@ Profiles are sections of the job YAML (`source`, `target`). Artefacts land in `.
 - Column families have no Spanner equivalent and are flattened; very wide tables with large families are flagged by `assess`.
 - Spanner can't index `jsonb`, `numeric`, `real` or array columns. Such indexes are skipped and reported by `convert`.
 - Schema changes on the source during replication aren't propagated automatically. They need a pause-and-apply procedure.
-- Reverse replication (failback, Spanner → CockroachDB) is out of scope. It belongs in a separate tool, `spanner2crdb`, which can reuse this tool's per-job mapping (`mapping.json`) and the transaction tag on its Spanner writes (so the reverse stream can skip forward-applied changes).
 
 ## Repository layout
 

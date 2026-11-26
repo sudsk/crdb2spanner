@@ -17,7 +17,6 @@ Version 0.1 (design) · Target: Cloud Spanner, **PostgreSQL dialect** · Runtime
 - Application code conversion. The assessment *flags* application-impacting changes such as int4→int8, sequences and `unique_rowid()`.
 - Automatic DDL propagation during replication.
 - Bidirectional active-active replication.
-- Reverse replication (failback). It is a separate tool, `spanner2crdb` (see 4.9).
 
 ---
 
@@ -32,7 +31,6 @@ Version 0.1 (design) · Target: Cloud Spanner, **PostgreSQL dialect** · Runtime
 | CDC | Datastream (PostgreSQL logical replication) | **No.** Datastream lists no CockroachDB source, and CockroachDB's CDC mechanism is changefeeds | **CockroachDB changefeeds** → Pub/Sub or GCS |
 | CDC apply | Dataflow `datastream-to-spanner` (Java) | Expects Datastream's event format | **Own Python Beam streaming job**, reusing the template's *design patterns*: shadow tables, retry/DLQ split |
 | Validation | DVT | Probably, through its PostgreSQL connector (spike) | **DVT** for counts and aggregates, plus **own chunked row-hash job** |
-| Reverse replication | `spanner-to-sourcedb` (MySQL, Cassandra) | No PostgreSQL / CockroachDB sink | **Separate tool** (`spanner2crdb`): change streams → CockroachDB |
 | App connectivity | PGAdapter | Yes | **Reuse PGAdapter** |
 
 So the gap Google doesn't cover is the CockroachDB-specific *capture* and *apply* layer. Everything around it can be reused or matched.
@@ -94,7 +92,7 @@ flowchart LR
 ### 4.1 Control plane (`control/`, `cli/`)
 
 - **Typer CLI.** A thin Cloud Run API can come later, if a UI is wanted.
-- **Job state machine:** `CREATED → ASSESSED → SCHEMA_APPLIED → SNAPSHOT_TAKEN → LOADING → LOADED → REPLICATING → VALIDATED → CUTOVER_READY → CUTOVER_DONE → (FALLBACK_ARMED) → CLOSED`.
+- **Job state machine:** `CREATED → ASSESSED → SCHEMA_APPLIED → SNAPSHOT_TAKEN → LOADING → LOADED → REPLICATING → VALIDATED → CUTOVER_READY → CUTOVER_DONE → CLOSED`.
 - **Metadata store:** a small Spanner database `crdb2spanner_meta`, holding jobs, tables, T0, changefeed IDs, Dataflow job IDs, per-table resolved watermarks, validation results and the audit log. This matches SMT's approach of a metadata database for live migrations.
 - **Secrets** are kept in Secret Manager. No DSNs in config files.
 - **Config:** one YAML file per job: source and target profiles, table include/exclude list, per-table overrides, and sink choice.
@@ -298,12 +296,6 @@ ReadFromPubSub(per-table subscriptions, with_attributes)
 - **Schema diff (M2):** compare the source catalog with the Spanner schema (columns, types, nullability, defaults, keys, indexes, sequences), treating the differences the conversion made on purpose (renames, dropped partial-index filters, bit-reversed sequences, deferred FKs) as expected.
 - **Sampled compare (M2):** for very large tables, compare N random key ranges of M rows each instead of a full scan.
 - **Mismatch CSV + revalidation (M2):** write every mismatched key to a CSV; `validate --recheck file.csv` re-reads only those keys on both sides (now, or at a given HLC) and keeps the ones that still differ, so the check can be repeated until replication lag clears.
-
-### 4.9 Failback: a separate tool (`spanner2crdb`)
-
-Reverse replication (Spanner change streams → CockroachDB) runs in the opposite direction, from a different source, with its own lifecycle (it only matters after cutover), so it is not part of this tool. A `spanner2crdb` tool can reuse two things from here:
-- the per-job `mapping.json`, to transform rows back (renames, key transforms, types);
-- the transaction tag on every write this tool makes, so a reverse stream running during testing can skip changes that came from the forward direction (no ping-pong).
 
 ---
 
