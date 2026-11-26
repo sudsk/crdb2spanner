@@ -30,7 +30,7 @@ Version 0.1 (design) · Target: Cloud Spanner, **PostgreSQL dialect** · Runtime
 | Bulk load | Datastream backfill, or Dataflow `sourcedb-to-spanner` (JDBC, `POSTGRESQL` dialect) | Datastream: **no**. JDBC template: *possibly*, via the PG JDBC driver (spike), but it lacks `AS OF SYSTEM TIME` consistency control | **Own Python Beam batch job** over a consistent `EXPORT` snapshot. JDBC template is an optional alternative |
 | CDC | Datastream (PostgreSQL logical replication) | **No.** Datastream lists no CockroachDB source, and CockroachDB's CDC mechanism is changefeeds | **CockroachDB changefeeds** → Pub/Sub or GCS |
 | CDC apply | Dataflow `datastream-to-spanner` (Java) | Expects Datastream's event format | **Own Python Beam streaming job**, reusing the template's *design patterns*: shadow tables, retry/DLQ split |
-| Validation | DVT | Probably, through its PostgreSQL connector (spike) | **DVT** for counts and aggregates, plus **own chunked row-hash job** |
+| Validation | DVT | Probably, through its PostgreSQL connector (spike) | **Own row-hash validation** (`validate`, exact at an HLC); **DVT** for schema and aggregate checks |
 | App connectivity | PGAdapter | Yes | **Reuse PGAdapter** |
 
 So the gap Google doesn't cover is the CockroachDB-specific *capture* and *apply* layer. Everything around it can be reused or matched.
@@ -282,7 +282,7 @@ ReadFromPubSub(per-table subscriptions, with_attributes)
   1. App write freeze, or switching CockroachDB users to read-only.
   2. Record `T_freeze`.
   3. Wait until every table's watermark is at or past `T_freeze` and the backlog is 0.
-  4. Final quick validation (counts plus sampled hashes).
+  4. Final validation: `crdb2spanner validate --as-of T_freeze`.
   5. Switch the app connection string to PGAdapter / Spanner.
   6. Cancel the changefeeds and drain Dataflow.
   7. Add FKs and indexes deferred to after cutover.
@@ -290,12 +290,8 @@ ReadFromPubSub(per-table subscriptions, with_attributes)
 ### 4.8 Validation (`pipelines/validate.py`)
 
 - **Level 1 + 2 (implemented, v0).** Read the source as a consistent snapshot `AS OF SYSTEM TIME t`. Read the target once replication has applied everything up to `t`. Map each row through the same transforms, then hash it into B buckets by PK. Because this is order-independent, PK transforms such as the bit-reversed `rowid` still work. Compare row counts and bucket sums, and drill into mismatched buckets to list the differing keys. The result is **exact** at the cutover write freeze, or once test traffic stops.
-- **Live validation (M2):** while writes continue, exclude keys whose shadow-table HLC is greater than `t`, so in-flight changes don't show up as false mismatches. Also add a Beam/Dataflow version of the scan for very large tables.
-- **Level 3:** column aggregates (sum, min, max, null counts) through **DVT**, if its PostgreSQL connector works against CockroachDB (spike).
-- **Normalisation layer:** decimals, timestamps (`timestamptz` precision, microseconds vs nanoseconds), JSON key order, float edge cases and array encoding.
-- **Schema diff (M2):** compare the source catalog with the Spanner schema (columns, types, nullability, defaults, keys, indexes, sequences), treating the differences the conversion made on purpose (renames, dropped partial-index filters, bit-reversed sequences, deferred FKs) as expected.
-- **Sampled compare (M2):** for very large tables, compare N random key ranges of M rows each instead of a full scan.
-- **Mismatch CSV + revalidation (M2):** write every mismatched key to a CSV; `validate --recheck file.csv` re-reads only those keys on both sides (now, or at a given HLC) and keeps the ones that still differ, so the check can be repeated until replication lag clears.
+- **Normalisation layer (implemented):** decimals, timestamps (`timestamptz` precision, microseconds vs nanoseconds), JSON key order, float32 (`real`), BYTES, INET, geospatial and array encoding.
+- **Everything else: Google's Data Validation Tool (DVT), not built here.** Schema validation, column aggregates (count, sum, min, max, group-by) and row-level comparisons come from DVT, which supports Spanner and Postgres connections. CockroachDB isn't on DVT's list of connection types, so it is reached through the Postgres connector (CockroachDB speaks the PostgreSQL wire protocol); to be confirmed on a real database. For a point-in-time source read, use DVT's custom-query mode with `AS OF SYSTEM TIME` in the source query. Columns this tool transforms (renamed columns, bit-reversed `rowid`, INET, UUID-as-text) need custom queries or must be excluded from DVT row checks.
 
 ---
 

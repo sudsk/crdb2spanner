@@ -2,7 +2,7 @@
 
 **Minimal-downtime migration from CockroachDB to Cloud Spanner (PostgreSQL dialect), built on Python and Dataflow.**
 
-> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (97 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, with zero failures (see [Test status](#test-status)). Not yet tested on real Spanner or Dataflow. Not production-ready.
+> **Status: v0.1 (pre-alpha), in end-to-end testing.** Assess, convert, snapshot, bulk load, CDC apply and validate are implemented and unit-tested (98 tests). The full torture suite (`scripts/e2e_torture.sh`) passes against a live CockroachDB v24.3 and the Spanner emulator, and the same data and CDC scenarios run end to end on real GCP (Cloud Storage, Dataflow, Spanner PostgreSQL dialect); see [Test status](#test-status). Not production-ready.
 
 ## Why this exists
 
@@ -69,7 +69,6 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |
 | Metadata DB, cutover gating, dashboards, Terraform | - | M2–M3 |
 | Flex Templates | `templates/` | Scaffold (M3) |
-| Validation: schema diff, sampled compare, mismatch CSV + revalidation loop | - | M2 |
 
 ## How a migration works (operator view)
 
@@ -191,7 +190,7 @@ While looking for existing CockroachDB → Spanner tooling we found [storj/spann
 | Types beyond integers, floats, bytes, JSON | Passed through unchanged | Typed conversion per column (NUMERIC, arrays, INET, intervals, timestamps, UUID, geospatial, ...) |
 | CockroachDB features | Hidden `rowid`, `unique_rowid()` / sequences, partial indexes | Also hash-sharded keys, `REGIONAL BY ROW` (incl. rows moving region), expression indexes, ENUM, TTL, CHECK, name collisions, UUID-native keys |
 | Source changes | One deliberate column type change for its own schema | None |
-| Validation | Counts; full key-ordered diff with per-column detail; random sampling; mismatch CSV + revalidation; cross-engine schema diff | Counts; order-independent bucketed hashes at an exact HLC with drill-down to keys and columns. Schema diff, sampling and mismatch CSV are on the roadmap |
+| Validation | Counts; full key-ordered diff with per-column detail; random sampling; mismatch CSV + revalidation; cross-engine schema diff | Counts; order-independent bucketed hashes at an exact HLC with drill-down to keys and columns. Schema and aggregate checks: Google's Data Validation Tool (DVT) |
 | Operator tooling | Live backlog metric, message peek, Pub/Sub purge | Changefeed lag, `status`, Dataflow metrics, GCP setup/teardown scripts |
 | Production use | Yes, at the company that built it | Not yet: end-to-end suites pass against live CockroachDB and the Spanner emulator; real-GCP run in progress |
 
@@ -201,5 +200,5 @@ While looking for existing CockroachDB → Spanner tooling we found [storj/spann
 |---|---|
 | M0: Spikes (2 wks) | CockroachDB → SMT schema path; `EXPORT` vs changefeed `initial_scan='only'`; Pub/Sub vs GCS sink throughput; Spanner PG-dialect writes from a Python DoFn |
 | M1: Bulk + CDC MVP | Assess, convert (SMT bridge), snapshot, bulk load, CDC apply, status |
-| M2: Validation and cutover | Schema diff (source catalog vs Spanner, with expected differences from the conversion); sampled compare (random key ranges, for very large tables); mismatch CSV + revalidation loop (re-check only the listed keys until replication lag clears); live validation; DVT aggregates; cutover gating |
+| M2: Cutover | Cutover gating (watermarks, lag thresholds), runbooks. Further validation (schema, aggregates) uses Google's DVT rather than being built here |
 | M3: Hardening | Shadow-table strict mode, DLQ reprocessing, Terraform module, dashboards, scale tests |
