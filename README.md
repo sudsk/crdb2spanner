@@ -44,7 +44,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Probes: geospatial | Fix pushed (changefeed GeoJSON converted to the EWKB that EXPORT writes), re-run pending |
 | Probes: column families | Known gap: CockroachDB requires `split_column_families`, which emits one partial event per family |
 | Multi-region (`scripts/e2e_multiregion.sh`): 3 regions, `REGIONAL BY ROW` / `GLOBAL` / `REGIONAL BY TABLE`, rows moving region | Passing |
-| Real Spanner + Dataflow (`scripts/e2e_gcp.sh`, [docs/gcp-runbook.md](docs/gcp-runbook.md)) | Passing so far on a Spanner free trial instance: schema (all 31 DDL statements, incl. native `uuid`, bit-reversed sequences, generated columns); `EXPORT` to Cloud Storage; Dataflow bulk load; streaming CDC (changefeeds → Cloud Storage → bucket notifications → streaming Dataflow → Spanner) validated exact on all 11 tables after each of scenarios 01, 02, 03, 05, 06, 07, 10 (converged in 30 s; 210 s for the 20,000-row transaction). Next: drain, indexes and FKs |
+| Real Spanner + Dataflow (`scripts/e2e_gcp.sh`, [docs/gcp-runbook.md](docs/gcp-runbook.md)) | Passing on a Spanner free trial instance: schema (all 31 DDL statements, incl. native `uuid`, bit-reversed sequences, generated columns); `EXPORT` to Cloud Storage; Dataflow bulk load; streaming CDC (changefeeds → Cloud Storage → bucket notifications → streaming Dataflow → Spanner) validated exact on all 11 tables after each of scenarios 01, 02, 03, 05, 06, 07, 10 (converged in 30 s; 210 s for the 20,000-row transaction); secondary indexes; FKs, CHECK and TTL after cutover |
 
 ## Implementation status
 
