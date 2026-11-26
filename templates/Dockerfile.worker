@@ -1,0 +1,15 @@
+# Dataflow worker image with crdb2spanner and its dependencies pre-installed, for workers that cannot
+# reach PyPI (no external IPs and no Cloud NAT). PY and BEAM_VERSION must match the environment that
+# submits the job (python --version; python -c "import apache_beam; print(apache_beam.__version__)").
+#
+#   gcloud builds submit --tag $REGION-docker.pkg.dev/$PROJECT/c2s/worker:0.1 \
+#     --config /dev/stdin . <<<'{"steps":[{"name":"gcr.io/cloud-builders/docker","args":["build","-f","templates/Dockerfile.worker","--build-arg","PY=3.12","--build-arg","BEAM_VERSION=2.78.0","-t","'$REGION-docker.pkg.dev/$PROJECT/c2s/worker:0.1'","."]}],"images":["'$REGION-docker.pkg.dev/$PROJECT/c2s/worker:0.1'"]}'
+#   crdb2spanner load -c CFG -- ... --sdk_container_image $REGION-docker.pkg.dev/$PROJECT/c2s/worker:0.1
+ARG PY=3.12
+ARG BEAM_VERSION=2.78.0
+FROM apache/beam_python${PY}_sdk:${BEAM_VERSION}
+
+WORKDIR /opt/crdb2spanner
+COPY pyproject.toml README.md LICENSE ./
+COPY src ./src
+RUN pip install --no-cache-dir .
