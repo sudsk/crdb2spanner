@@ -16,7 +16,8 @@ Version 0.1 (design) · Target: Cloud Spanner, **PostgreSQL dialect** · Runtime
 **Non-goals (v1)**
 - Application code conversion. The assessment *flags* application-impacting changes such as int4→int8, sequences and `unique_rowid()`.
 - Automatic DDL propagation during replication.
-- Bidirectional active-active replication. Reverse replication is for fallback only (M4).
+- Bidirectional active-active replication.
+- Reverse replication (failback). It is a separate tool, `spanner2crdb` (see 4.9).
 
 ---
 
@@ -31,7 +32,7 @@ Version 0.1 (design) · Target: Cloud Spanner, **PostgreSQL dialect** · Runtime
 | CDC | Datastream (PostgreSQL logical replication) | **No.** Datastream lists no CockroachDB source, and CockroachDB's CDC mechanism is changefeeds | **CockroachDB changefeeds** → Pub/Sub or GCS |
 | CDC apply | Dataflow `datastream-to-spanner` (Java) | Expects Datastream's event format | **Own Python Beam streaming job**, reusing the template's *design patterns*: shadow tables, retry/DLQ split |
 | Validation | DVT | Probably, through its PostgreSQL connector (spike) | **DVT** for counts and aggregates, plus **own chunked row-hash job** |
-| Reverse replication | `spanner-to-sourcedb` (MySQL, Cassandra) | No PostgreSQL / CockroachDB sink | **Own job** (M4): change streams → CockroachDB |
+| Reverse replication | `spanner-to-sourcedb` (MySQL, Cassandra) | No PostgreSQL / CockroachDB sink | **Separate tool** (`spanner2crdb`): change streams → CockroachDB |
 | App connectivity | PGAdapter | Yes | **Reuse PGAdapter** |
 
 So the gap Google doesn't cover is the CockroachDB-specific *capture* and *apply* layer. Everything around it can be reused or matched.
@@ -294,12 +295,15 @@ ReadFromPubSub(per-table subscriptions, with_attributes)
 - **Live validation (M2):** while writes continue, exclude keys whose shadow-table HLC is greater than `t`, so in-flight changes don't show up as false mismatches. Also add a Beam/Dataflow version of the scan for very large tables.
 - **Level 3:** column aggregates (sum, min, max, null counts) through **DVT**, if its PostgreSQL connector works against CockroachDB (spike).
 - **Normalisation layer:** decimals, timestamps (`timestamptz` precision, microseconds vs nanoseconds), JSON key order, float edge cases and array encoding.
+- **Schema diff (M2):** compare the source catalog with the Spanner schema (columns, types, nullability, defaults, keys, indexes, sequences), treating the differences the conversion made on purpose (renames, dropped partial-index filters, bit-reversed sequences, deferred FKs) as expected.
+- **Sampled compare (M2):** for very large tables, compare N random key ranges of M rows each instead of a full scan.
+- **Mismatch CSV + revalidation (M2):** write every mismatched key to a CSV; `validate --recheck file.csv` re-reads only those keys on both sides (now, or at a given HLC) and keeps the ones that still differ, so the check can be repeated until replication lag clears.
 
-### 4.9 Reverse replication (M4)
+### 4.9 Failback: a separate tool (`spanner2crdb`)
 
-Spanner change stream → Python Beam (`ReadChangeStreamFromSpanner` via cross-language, or the Java template pattern) → transform back through the session file → `psycopg` upserts into CockroachDB, guarded by commit timestamp.
-
-To prevent loops, the forward CDC is stopped at cutover, so there's no ping-pong. If both run concurrently during testing, writes made by the reverse job are tagged with a transaction tag, and those changes are filtered out.
+Reverse replication (Spanner change streams → CockroachDB) runs in the opposite direction, from a different source, with its own lifecycle (it only matters after cutover), so it is not part of this tool. A `spanner2crdb` tool can reuse two things from here:
+- the per-job `mapping.json`, to transform rows back (renames, key transforms, types);
+- the transaction tag on every write this tool makes, so a reverse stream running during testing can skip changes that came from the forward direction (no ping-pong).
 
 ---
 
@@ -328,7 +332,7 @@ To prevent loops, the forward CDC is stopped at cutover, so there's no ping-pong
 ## 6. Packaging and deployment
 
 - **Python package** `crdb2spanner` (Poetry or uv), with the CLI entry point.
-- **Dataflow Flex Templates**, one per pipeline (`bulk_load`, `cdc_apply`, `validate`, `reverse`). The container image is built in Cloud Build and stored in Artifact Registry. This allows launches from the CLI, Console or Composer.
+- **Dataflow Flex Templates**, one per pipeline (`bulk_load`, `cdc_apply`, `validate`). The container image is built in Cloud Build and stored in Artifact Registry. This allows launches from the CLI, Console or Composer.
 - **Terraform module** `terraform/`: GCS buckets, Pub/Sub topics, subscriptions and DLQs, service accounts and IAM, Spanner metadata DB, Monitoring dashboard and alerts, VPC/PSC.
 - **Orchestration:** the CLI is enough for v1. Cloud Workflows or Composer can be used for multi-wave programmes.
 
@@ -348,7 +352,7 @@ To prevent loops, the forward CDC is stopped at cutover, so there's no ping-pong
 
 - Separate service accounts per component: control plane, Dataflow worker, CockroachDB-to-GCP sink identity. Least privilege applies throughout: `spanner.databaseUser` on the target, `pubsub.publisher` for the sink identity only.
 - CockroachDB credentials and sink credentials are kept in Secret Manager.
-- Connectivity: CockroachDB has to reach Pub/Sub and GCS (Private Google Access / PSC over Interconnect or VPN for self-hosted clusters). Dataflow has to reach CockroachDB for validation and reverse replication.
+- Connectivity: CockroachDB has to reach Pub/Sub and GCS (Private Google Access / PSC over Interconnect or VPN for self-hosted clusters). Dataflow has to reach CockroachDB for validation.
 - CMEK on GCS, Pub/Sub and Spanner, where the client requires it.
 - PII: the DLQ stores row data, so it gets the same retention and access controls as the source.
 

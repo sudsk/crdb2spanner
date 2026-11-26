@@ -13,7 +13,7 @@ Google Cloud offers a guided, minimal-downtime path for MySQL/PostgreSQL → Spa
 - **Connection profiles** for the CockroachDB source and the Spanner target
 - **Migration jobs** that move through the phases *assess → convert → load → replicate → validate → cut over*
 - **Reuse of SMT** for schema conversion, and of SMT's session file as the schema-mapping contract
-- **Python Apache Beam pipelines on Dataflow** for bulk load, change data capture (CDC), validation and (later) reverse replication
+- **Python Apache Beam pipelines on Dataflow** for bulk load, change data capture (CDC) and validation
 - **CockroachDB changefeeds** as the CDC source, replacing Datastream
 - **No changes to the source database.** The tool reads the source as it is: no primary-key type changes, no added columns, no triggers. CockroachDB-specific constructs (hidden `rowid`, `unique_rowid()`, hash-sharded keys, `REGIONAL BY ROW`, expression indexes) are handled on the Spanner side.
 
@@ -69,7 +69,7 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |
 | Metadata DB, cutover gating, dashboards, Terraform | - | M2–M3 |
 | Flex Templates | `templates/` | Scaffold (M3) |
-| Reverse replication | - | M4 |
+| Validation: schema diff, sampled compare, mismatch CSV + revalidation loop | - | M2 |
 
 ## How a migration works (operator view)
 
@@ -133,7 +133,7 @@ Profiles are sections of the job YAML (`source`, `target`). Artefacts land in `.
 - Column families have no Spanner equivalent and are flattened; very wide tables with large families are flagged by `assess`.
 - Spanner can't index `jsonb`, `numeric`, `real` or array columns. Such indexes are skipped and reported by `convert`.
 - Schema changes on the source during replication aren't propagated automatically. They need a pause-and-apply procedure.
-- Reverse replication (fallback) is on the roadmap, not in v1.
+- Reverse replication (failback, Spanner → CockroachDB) is out of scope. It belongs in a separate tool, `spanner2crdb`, which can reuse this tool's per-job mapping (`mapping.json`) and the transaction tag on its Spanner writes (so the reverse stream can skip forward-applied changes).
 
 ## Repository layout
 
@@ -179,6 +179,5 @@ The work is I/O-bound: CockroachDB export and changefeed emission, reading Cloud
 |---|---|
 | M0: Spikes (2 wks) | CockroachDB → SMT schema path; `EXPORT` vs changefeed `initial_scan='only'`; Pub/Sub vs GCS sink throughput; Spanner PG-dialect writes from a Python DoFn |
 | M1: Bulk + CDC MVP | Assess, convert (SMT bridge), snapshot, bulk load, CDC apply, status |
-| M2: Validation and cutover | Chunked-hash validation, DVT integration, cutover gating, runbooks |
+| M2: Validation and cutover | Schema diff (source catalog vs Spanner, with expected differences from the conversion); sampled compare (random key ranges, for very large tables); mismatch CSV + revalidation loop (re-check only the listed keys until replication lag clears); live validation; DVT aggregates; cutover gating |
 | M3: Hardening | Shadow-table strict mode, DLQ reprocessing, Terraform module, dashboards, scale tests |
-| M4: Fallback | Reverse replication with Spanner change streams → CockroachDB |
