@@ -192,7 +192,7 @@ While looking for existing CockroachDB → Spanner tooling we found [storj/spann
 | Source changes | One deliberate column type change for its own schema | None |
 | Validation | Counts; full key-ordered diff with per-column detail; random sampling; mismatch CSV + revalidation; cross-engine schema diff | Counts; order-independent bucketed hashes at an exact HLC with drill-down to keys and columns. Schema and aggregate checks: Google's Data Validation Tool (DVT) |
 | Operator tooling | Live backlog metric, message peek, Pub/Sub purge | Changefeed lag, `status`, Dataflow metrics, GCP setup/teardown scripts |
-| Production use | Yes, at the company that built it | Not yet: end-to-end suites pass against live CockroachDB and the Spanner emulator; real-GCP run in progress |
+| Production use | Yes, at the company that built it | Not yet: end-to-end suites pass against live CockroachDB with the Spanner emulator and on real GCP (Cloud Storage, Dataflow, Spanner) |
 
 ## Roadmap
 
