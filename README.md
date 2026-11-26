@@ -51,11 +51,11 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Area | Module | Status |
 |---|---|---|
 | Job config (YAML, env/Secret Manager) | `config.py` | Implemented |
-| Catalog introspection | `crdb/catalog.py` | Implemented, needs a live-cluster check |
+| Catalog introspection | `crdb/catalog.py` | Implemented, passing in e2e |
 | Assessment report | `assess/rules.py` | Implemented (initial rule set) |
 | Schema conversion → PG DDL + mapping | `schema/converter.py`, `types.py`, `values.py` | Implemented, unit-tested |
-| SMT bridge (CockroachDB DDL → PG DDL for SMT) | `schema/smt_bridge.py` | Implemented. SMT import still to be checked (M0) |
-| SMT session file → mapping import | - | M1 |
+| SMT bridge (CockroachDB DDL → PG DDL for SMT) | `schema/smt_bridge.py` | Implemented; importing into SMT not yet checked |
+| SMT session file → mapping import | - | Not built |
 | Snapshot (`EXPORT ... AS OF SYSTEM TIME`) | `crdb/snapshot.py` | Implemented |
 | Changefeed create/list/cancel | `crdb/changefeed.py` | Implemented |
 | Bulk load (Beam) | `pipelines/bulk_load.py` | Implemented |
@@ -67,8 +67,8 @@ See [docs/test-environment.md](docs/test-environment.md) for the VM setup, the s
 | Pub/Sub admin, `count`, `truncate-target` | `control/pubsub_admin.py`, `spanner/data.py` | Implemented |
 | Identifier renames, database-wide names, sequences, `unique_rowid()` → sequence defaults, native `uuid`, expression / duplicate indexes, CHECK, TTL, natural-key overrides | `schema/converter.py` | Implemented, passing in e2e |
 | Many databases at once (`wave`) | `control/wave.py`, `examples/wave.template.yaml` | Implemented |
-| Metadata DB, cutover gating, dashboards, Terraform | - | M2–M3 |
-| Flex Templates | `templates/` | Scaffold (M3) |
+| Cutover gating (watermarks, lag thresholds), metadata DB, dashboards, Terraform | - | Not built |
+| Flex Templates, pre-built worker image | `templates/` | Scaffold, not yet exercised |
 
 ## How a migration works (operator view)
 
@@ -192,13 +192,4 @@ While looking for existing CockroachDB → Spanner tooling we found [storj/spann
 | Source changes | One deliberate column type change for its own schema | None |
 | Validation | Counts; full key-ordered diff with per-column detail; random sampling; mismatch CSV + revalidation; cross-engine schema diff | Counts; order-independent bucketed hashes at an exact HLC with drill-down to keys and columns. Schema and aggregate checks: Google's Data Validation Tool (DVT) |
 | Operator tooling | Live backlog metric, message peek, Pub/Sub purge | Changefeed lag, `status`, Dataflow metrics, GCP setup/teardown scripts |
-| Production use | Yes, at the company that built it | Not yet: end-to-end suites pass against live CockroachDB with the Spanner emulator and on real GCP (Cloud Storage, Dataflow, Spanner) |
-
-## Roadmap
-
-| Milestone | Scope |
-|---|---|
-| M0: Spikes (2 wks) | CockroachDB → SMT schema path; `EXPORT` vs changefeed `initial_scan='only'`; Pub/Sub vs GCS sink throughput; Spanner PG-dialect writes from a Python DoFn |
-| M1: Bulk + CDC MVP | Assess, convert (SMT bridge), snapshot, bulk load, CDC apply, status |
-| M2: Cutover | Cutover gating (watermarks, lag thresholds), runbooks. Further validation (schema, aggregates) uses Google's DVT rather than being built here |
-| M3: Hardening | Shadow-table strict mode, DLQ reprocessing, Terraform module, dashboards, scale tests |
+| Performance / scaling | One Go process per table; parallel writers inside it (24 by default), 2,500-row batches, up to 300 ms commit delay; scale = more processes | One Dataflow job for all tables; workers autoscale; parallelism = `num_shards` commit streams, mutation-aware batches, configurable commit delay; bulk load reads Parquet files in parallel instead of streaming every row through Pub/Sub. Not yet benchmarked: functional runs only so far (Spanner free trial instance) |
