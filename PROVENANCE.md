@@ -22,5 +22,5 @@
 
 | Date | Who | Note |
 |---|---|---|
-| 2026-10-25 | Suds / Claude | Initial README and ARCHITECTURE written from vendor docs only |
-| 2026-10-25 | Suds / Claude | v0.1 code scaffold written from vendor docs + Apache-2.0 Beam/Spanner client APIs only |
+| 2026-10-25 | Suds | Initial README and ARCHITECTURE written from vendor docs only |
+| 2026-10-25 | Suds | v0.1 code scaffold written from vendor docs + Apache-2.0 Beam/Spanner client APIs only |
