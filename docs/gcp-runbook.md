@@ -39,6 +39,11 @@ This creates:
 - the Dataflow worker service account `c2s-dataflow`, with roles `dataflow.worker`, `spanner.databaseUser`, `pubsub.subscriber` and object admin on the bucket
 - roles for the VM's service account: `spanner.databaseAdmin`, `dataflow.developer`, object admin on the bucket, and permission to run jobs as the worker service account
 
+**Free trial instance.** A Spanner free trial instance (90 days, 10 GB, a tenth of a node) is enough
+for this functional test. It supports PostgreSQL-dialect databases and regional configurations. Create
+it in the console and set `SPANNER_INSTANCE` to its ID; `gcp_setup.sh` then leaves it alone. It is not
+meant for performance testing, and a project gets only one, so tear down with `KEEP_SPANNER=1`.
+
 ## 2. Run the whole thing
 
 ```bash

@@ -3,6 +3,8 @@
 #
 #   ./scripts/gcp_teardown.sh            # Spanner instance, Dataflow jobs, Pub/Sub, notification
 #   DELETE_BUCKET=1 ./scripts/gcp_teardown.sh   # ...and the bucket with everything in it
+#   KEEP_SPANNER=1 ./scripts/gcp_teardown.sh    # keep the instance (e.g. a free trial instance: a project
+#                                               # gets only one, so deleting it means paying for the next)
 set -uo pipefail
 
 : "${GCP_PROJECT:?set GCP_PROJECT}"
@@ -16,8 +18,13 @@ for j in $(g dataflow jobs list --region "$REGION" --status active --format='val
   g dataflow jobs cancel "$j" --region "$REGION" || true
 done
 
-echo "==> Spanner instance $SPANNER_INSTANCE"
-g spanner instances delete "$SPANNER_INSTANCE" || true
+if [ -n "${KEEP_SPANNER:-}" ]; then
+  echo "==> keeping Spanner instance $SPANNER_INSTANCE (KEEP_SPANNER set); dropping the test database only"
+  g spanner databases delete torture --instance "$SPANNER_INSTANCE" || true
+else
+  echo "==> Spanner instance $SPANNER_INSTANCE"
+  g spanner instances delete "$SPANNER_INSTANCE" || true
+fi
 
 echo "==> bucket notifications, Pub/Sub"
 for n in $(g storage buckets notifications list "gs://$BUCKET" --format='value(name)' 2>/dev/null); do
